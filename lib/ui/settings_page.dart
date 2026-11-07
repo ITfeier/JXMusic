@@ -202,7 +202,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.7.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.8.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',
@@ -429,13 +429,16 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
     }
   }
 
-  /// 各平台取码失败的具体原因提示（避免笼统的"二维码获取失败"）
+  /// 各平台取码失败的提示：优先用接口层回报的具体原因（lastError），
+  /// 避免笼统的"二维码获取失败"或写死 403/502。
   String _failHint() {
+    final detail = widget.api.lastError;
+    if (detail != null && detail.trim().isNotEmpty) return detail;
     if (widget.api is QQMusicApi) {
-      return '二维码获取失败：QQ 扫码接口对本机网络存在风控(403)。\n可更换网络后重试，或先在浏览器登录 QQ 音乐';
+      return 'QQ 二维码获取失败：请检查网络后重试（QQ 扫码接口偶发风控）';
     }
     if (widget.api is KuGouApi) {
-      return '二维码获取失败：酷狗官方扫码服务暂不可用(网关502)。\n请稍后再试，或先用浏览器访问 m.kugou.com 登录';
+      return '酷狗二维码获取失败：请检查网络后重试（酷狗登录接口可能变更）';
     }
     return '二维码获取失败，请重试';
   }
@@ -455,6 +458,15 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
         _done = true;
         _timer?.cancel();
         Navigator.of(context).pop(session);
+        return;
+      }
+      // 等待态不覆盖提示；接口层明确报错（如过期/参数变更）时展示准确原因，
+      // 错误恢复（重新进入等待态）后把提示复位，避免旧错误文案残留。
+      final error = widget.api.lastError;
+      if (error != null && error.isNotEmpty) {
+        setState(() => _hint = error);
+      } else if (_hint != '请使用对应平台 App 扫码登录') {
+        setState(() => _hint = '请使用对应平台 App 扫码登录');
       }
     } catch (_) {
       // 单次轮询失败忽略，继续下一轮

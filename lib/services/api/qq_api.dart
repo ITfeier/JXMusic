@@ -21,20 +21,38 @@ class QQMusicApi implements MusicPlatformApi {
 
   String _guid = '';
 
-  // ---- 官方扫码登录态（ptlogin2 标准流程）----
+  // ---- 官方扫码登录态（ptlogin2 + QQ Connect 标准流程，2026-11 实测口径）----
+  // 链路：ptqrshow 取码 → ptqrlogin 轮询 → 扫码确认后 check_sig 换 p_skey →
+  // graph.qq.com/oauth2.0/authorize 换 code → musicu QQConnectLogin.LoginServer.QQLogin
+  // 换 musicid/musickey（写入 uin/qqmusic_uin/qm_keyst/qqmusic_key cookie）。
+  //
+  // 与旧实现的关键差异（2026-11-08 本机实测，历经 QA 独立复核）：
+  // 1) ptqrshow 的关键变量是 **u1**：带 u1（无论指向 y.qq.com 还是 graph，任何编码形态）
+  //    会被网关（TAPISIX）以 403 拒绝；不带 u1 时 200 + 真二维码 PNG（111x111）+ qrsig(128)。
+  //    注意：真二维码 PNG 压缩后仅约 430~450 字节，与"占位图"大小接近，不能按字节数判断真伪。
+  // 2) ptqrlogin 必须带 u1=graph.qq.com/oauth2.0/login_jump，且要带齐 action/js_ver 等
+  //    浏览器侧参数：缺 u1 → ptuiCB('7',...,'提交参数错误')；u1 指向 y.qq.com 旧地址 → 403。
+  // 3) 旧 y.qq.com/portal/wxa_redirect.html 已 404，qqmusic_key 换 cookie 链路失效，
+  //    改为 check_sig → authorize → QQLogin 取 musicid/musickey。
   static const String _ptqrshow = 'https://ssl.ptlogin2.qq.com/ptqrshow';
   static const String _ptqrlogin = 'https://ssl.ptlogin2.qq.com/ptqrlogin';
-  static const String _wxaRedirect =
-      'https://y.qq.com/portal/wxa_redirect.html';
+  static const String _checkSig = 'https://ssl.ptlogin2.graph.qq.com/check_sig';
+  static const String _qqAuthorize = 'https://graph.qq.com/oauth2.0/authorize';
+  static const String _loginJump = 'https://graph.qq.com/oauth2.0/login_jump';
+  static const String _redirectUri =
+      'https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/';
   static const String _appid = '716027609'; // QQ音乐 Web 应用
   static const String _daid = '383';
   static const String _pt3rdAid = '100497308';
   final Map<String, String> _ptCookies = {}; // ssl.ptlogin2 域（qrsig）
-  final Map<String, String> _loginCookies = {}; // y.qq.com 域（uin/skey/p_skey）
+  final Map<String, String> _loginCookies = {}; // y.qq.com 域（uin/musickey）
   String? _qrsig;
 
-  static String get _u1 => Uri.encodeComponent(
-      'https://y.qq.com/portal/wxa_redirect.html?login_type=1&surl=https%3A%2F%2Fy.qq.com%2F');
+  /// 最近一次扫码操作失败原因（成功/等待时为 null，供设置页展示准确提示）
+  String? _lastError;
+
+  @override
+  String? get lastError => _lastError;
 
   String get _loginUin {
     final uin = _loginCookies['uin'] ?? '';
@@ -55,9 +73,11 @@ class QQMusicApi implements MusicPlatformApi {
     }
   }
 
-  /// ptqrtoken = hash33(qrsig)（QQ 官方算法）
-  int _hash33(String s) {
-    var e = 0;
+  /// hash33（QQ 官方算法）：h = (h << 5) + h + c，返回低 31 位
+  /// - ptqrtoken = hash33(qrsig)
+  /// - g_tk = hash33(p_skey, 5381)
+  int _hash33(String s, [int h = 0]) {
+    var e = h;
     for (final c in s.codeUnits) {
       e += (e << 5) + c;
     }
@@ -275,13 +295,13 @@ class QQMusicApi implements MusicPlatformApi {
     if (_loginCookies.isNotEmpty) _guid = _randomGuid;
   }
 
-  // ---- 官方扫码登录（ptlogin2 标准流程：ptqrshow 取二维码 + ptqrlogin 轮询）----
+  // ---- 官方扫码登录（ptqrshow 取码 + ptqrlogin 轮询 + QQ Connect 换登录态）----
   @override
   Future<({String qrUrl, String key})> createQrLogin() async {
     _ptCookies.clear();
     _loginCookies.clear();
     _qrsig = null;
-    final t = DateTime.now().millisecondsSinceEpoch.toString();
+    _lastError = null;
     try {
       final resp = await JXHttp.dio.get(_ptqrshow,
           queryParameters: {
@@ -291,98 +311,279 @@ class QQMusicApi implements MusicPlatformApi {
             's': '3',
             'd': '72',
             'v': '4',
-            't': t,
+            't': DateTime.now().millisecondsSinceEpoch.toString(),
             'daid': _daid,
             'pt_3rd_aid': _pt3rdAid,
-            'u1': _u1,
-            'pt_fido_link': 1,
+            // 不要加 u1：u1 与 daid 同时出现会被网关 403（2026-11 实测）
           },
-          options: Options(responseType: ResponseType.bytes));
+          options: Options(
+            responseType: ResponseType.bytes,
+            receiveTimeout: const Duration(seconds: 10),
+            headers: {'Referer': 'https://xui.ptlogin2.qq.com/'},
+          ));
       _collectSetCookies(resp.headers, _ptCookies);
-      _qrsig = _ptCookies['qrsig'];
-      if (_qrsig == null || _qrsig!.isEmpty) {
+      final qrsig = _ptCookies['qrsig'] ?? '';
+      final bytes =
+          resp.data is List<int> ? resp.data as List<int> : const <int>[];
+      // 真二维码判据：PNG 魔数 + 111x111（压缩后仅约 400~500 字节，但不能按字节数判断）
+      if (qrsig.length <= 40 || !_isQrPng(bytes)) {
+        _lastError = 'QQ 取码返回异常图片（可能被网关风控），请更换网络后重试';
         return (qrUrl: '', key: '');
       }
-      final b64 = base64Encode(resp.data as List<int>);
-      return (qrUrl: 'data:image/jpeg;base64,$b64', key: _qrsig!);
-    } catch (_) {
+      _qrsig = qrsig;
+      return (qrUrl: 'data:image/png;base64,${base64Encode(bytes)}', key: qrsig);
+    } catch (e) {
+      _lastError = _describeError(e, 'QQ 二维码获取失败');
       return (qrUrl: '', key: '');
     }
   }
 
+  /// 把网络异常翻译成用户能看懂的原因
+  String _describeError(Object error, String prefix) {
+    if (error is DioException) {
+      final code = error.response?.statusCode;
+      if (code == 403) {
+        return '$prefix：请求被 QQ 服务器拒绝（403，通常是网络风控），请更换网络后重试';
+      }
+      if (code != null) return '$prefix：HTTP $code';
+      return '$prefix：网络不可达（${error.type.name}）';
+    }
+    return '$prefix：$error';
+  }
+
+  /// 校验响应确实是二维码 PNG（魔数 8950 4E47 + IHDR 宽高 >= 80，排除占位/错误图）
+  bool _isQrPng(List<int> bytes) {
+    if (bytes.length < 33) return false;
+    const magic = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+    for (var i = 0; i < magic.length; i++) {
+      if (bytes[i] != magic[i]) return false;
+    }
+    final w = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+    final h = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+    return w >= 80 && h >= 80;
+  }
+
   @override
   Future<AccountSession?> pollQrLogin(String key) async {
-    if (_qrsig == null || _qrsig != key) return null;
-    final token = _hash33(_qrsig!);
+    if (_qrsig == null || _qrsig != key || key.isEmpty) return null;
     try {
       final resp = await JXHttp.dio.get(_ptqrlogin,
           queryParameters: {
-            'ptqrtoken': token,
-            'webqq_type': 10,
-            'remember_uin': 1,
-            'login2qq': 1,
+            // 必须带 u1=graph.qq.com/oauth2.0/login_jump：缺 u1 → code 7 参数错误，
+            // 指向 y.qq.com 旧地址（wxa_redirect.html 已 404）→ 网关 403
+            'u1': _loginJump,
+            'ptqrtoken': _hash33(key).toString(),
+            'ptredirect': '0',
+            'h': '1',
+            't': '1',
+            'g': '1',
+            'from_ui': '1',
+            'ptlang': '2052',
+            'action': '0-0-${DateTime.now().millisecondsSinceEpoch}',
+            'js_ver': '20102616',
+            'js_type': '1',
+            'pt_uistyle': '40',
             'aid': _appid,
-            'u1': _u1,
-            'pt_3rd_aid': _pt3rdAid,
-            'pt_fido_link': 1,
-            'ptlang': 2052,
-            'ptredirect': 0,
             'daid': _daid,
-            'j_later': 0,
-            'low_login_hour': 0,
-            'regmaster': 0,
-            'pt_login_type': 1,
-            'pt_aid': _appid,
-            'pt_aaid': 0,
-            'pt_light': 0,
-            'dummy': 1,
-            'type': 1,
+            'pt_3rd_aid': _pt3rdAid,
+            'has_onekey': '1',
           },
-          options: Options(
-            headers: {'Cookie': _cookieStr(_ptCookies)},
-          ));
+          options: Options(headers: {
+            'Referer': 'https://xui.ptlogin2.qq.com/',
+            'Cookie': 'qrsig=$key',
+          }));
       final text = resp.data.toString();
       // ptuiCB('0','0','跳转URL','0','登录成功!','昵称')
+      // 66=未扫码 67=待确认 65=已过期
       final m = RegExp(
               r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)','([^']*)'")
           .firstMatch(text);
-      if (m == null) return null;
-      final code = m.group(1);
-      if (code != '0') return null; // 66 等待扫码 / 67 待确认 / 65 过期
-      final jumpUrl = m.group(2) ?? '';
-      final nickname = (m.group(4) ?? '').trim();
-      // 用跳转 URL 中的 qqmusic_key 换取 y.qq.com 域登录 cookie（uin/skey/p_skey）
-      _loginCookies.clear();
-      final keyMatch = RegExp(r'qqmusic_key=([^&]+)').firstMatch(jumpUrl);
-      if (keyMatch != null) {
-        await _exchangeKey(keyMatch.group(1)!);
+      if (m == null) {
+        _lastError = 'QQ 轮询返回异常内容，登录接口可能已变更';
+        return null;
       }
-      if (_loginCookies.isEmpty) return null;
+      final code = m.group(1) ?? '';
+      if (code == '66' || code == '67') {
+        _lastError = null; // 等待扫码 / 待确认，属正常状态
+        return null;
+      }
+      if (code == '65') {
+        _lastError = '二维码已过期，请关闭后重新获取';
+        return null;
+      }
+      if (code == '7') {
+        _lastError = 'QQ 轮询参数校验失败，登录接口可能已变更';
+        return null;
+      }
+      if (code != '0') {
+        _lastError = 'QQ 登录未完成（code $code）';
+        return null;
+      }
+      final jumpUrl = m.group(2) ?? '';
+      final ptNick = (m.group(4) ?? '').trim();
+      final uin = RegExp(r'[?&]uin=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
+      final sigx =
+          RegExp(r'[?&]ptsigx=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
+      if (uin.isEmpty || sigx.isEmpty) {
+        _lastError = 'QQ 登录跳转参数解析失败（接口可能已变更）';
+        return null;
+      }
+
+      final data = await _exchangeLogin(uin, sigx);
+      if (data == null) {
+        _lastError = 'QQ 扫码已确认，但换取登录态失败（check_sig/authorize/QQLogin）';
+        return null;
+      }
+      final rawId = data['musicid'];
+      final musicid = (rawId is num && rawId > 0)
+          ? '${rawId.toInt()}'
+          : '${data['str_musicid'] ?? ''}'.replaceFirst(RegExp('^[oO]'), '');
+      final musickey = '${data['musickey'] ?? ''}';
+      if (musicid.isEmpty || musicid == '0' || musickey.isEmpty) {
+        _lastError = 'QQ 登录凭证不完整（缺少 musicid/musickey）';
+        return null;
+      }
+
+      var nick = '${data['nick'] ?? ''}'.trim();
+      if (nick.isEmpty) nick = ptNick;
+      if (nick.isEmpty) nick = 'QQ用户';
+
+      _loginCookies
+        ..clear()
+        ..['uin'] = musicid
+        ..['qqmusic_uin'] = musicid
+        ..['qm_keyst'] = musickey
+        ..['qqmusic_key'] = musickey;
+      _guid = _randomGuid;
+      _lastError = null;
       return AccountSession(
         platform: platform,
         cookies: Map.of(_loginCookies),
-        nickname: nickname.isEmpty ? 'QQ用户' : nickname,
+        nickname: nick,
       );
+    } catch (e) {
+      _lastError = _describeError(e, 'QQ 扫码轮询失败');
+      return null;
+    }
+  }
+
+  /// 扫码确认后换登录态：check_sig 取 p_skey → oauth2/authorize 取 code →
+  /// musicu `QQConnectLogin.LoginServer.QQLogin` 取 musicid/musickey。
+  /// 任一步失败返回 null（视为登录未完成，不抛异常）。
+  Future<Map<String, dynamic>?> _exchangeLogin(
+      String uin, String ptsigx) async {
+    try {
+      final sigResp = await JXHttp.dio.get(_checkSig,
+          queryParameters: {
+            'uin': uin,
+            'pttype': '1',
+            'service': 'ptqrlogin',
+            'nodirect': '0',
+            'ptsigx': ptsigx,
+            's_url': _loginJump,
+            'ptlang': '2052',
+            'ptredirect': '100',
+            'aid': _appid,
+            'daid': _daid,
+            'j_later': '0',
+            'low_login_hour': '0',
+            'regmaster': '0',
+            'pt_login_type': '3',
+            'pt_aid': '0',
+            'pt_aaid': '16',
+            'pt_light': '0',
+            'pt_3rd_aid': _pt3rdAid,
+          },
+          options: Options(
+            followRedirects: false,
+            validateStatus: (s) => s != null && s < 500,
+            headers: {'Referer': 'https://xui.ptlogin2.qq.com/'},
+          ));
+      final ptCookies = <String, String>{};
+      _collectSetCookies(sigResp.headers, ptCookies);
+      final pSkey = ptCookies['p_skey'] ?? '';
+      if (pSkey.isEmpty) return null;
+
+      final authResp = await JXHttp.dio.post(_qqAuthorize,
+          data: {
+            'response_type': 'code',
+            'client_id': _pt3rdAid,
+            'redirect_uri': _redirectUri,
+            'scope': 'get_user_info,get_app_friends',
+            'state': 'state',
+            'switch': '',
+            'from_ptlogin': '1',
+            'src': '1',
+            'update_auth': '1',
+            'openapi': '1010_1030',
+            'g_tk': _hash33(pSkey, 5381).toString(),
+            'auth_time': DateTime.now().millisecondsSinceEpoch.toString(),
+            'ui': _uuidV4,
+          },
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            followRedirects: false,
+            validateStatus: (s) => s != null && s < 500,
+            headers: {
+              'Referer': 'https://graph.qq.com/',
+              'Cookie': _cookieStr(ptCookies),
+            },
+          ));
+      var code = '';
+      final location = authResp.headers.value('Location') ??
+          authResp.headers.value('location') ??
+          '';
+      code = RegExp(r'[?&]code=([^&]+)').firstMatch(location)?.group(1) ?? '';
+      if (code.isEmpty) {
+        // 部分情况下 302 的 Location 丢失，兜底从响应体/跳转脚本里取 code
+        code = RegExp(r'(?:[?&]|\\u0026)code=([^&"\\\s]+)')
+                .firstMatch('${authResp.data}')
+                ?.group(1) ??
+            '';
+      }
+      if (code.isEmpty) return null;
+
+      final loginResp = await JXHttp.dio.get(_musicu,
+          queryParameters: {
+            'format': 'json',
+            'data': jsonEncode({
+              'comm': {
+                'ct': 24,
+                'cv': 4747474,
+                'platform': 'yqq.json',
+                'format': 'json',
+                'inCharset': 'utf-8',
+                'outCharset': 'utf-8',
+                'notice': 0,
+                'need_new_code': 1,
+                'tmeLoginType': 2,
+              },
+              'req': {
+                'module': 'QQConnectLogin.LoginServer',
+                'method': 'QQLogin',
+                'param': {'code': code},
+              }
+            }),
+          },
+          options: Options(headers: {'Referer': 'https://y.qq.com/'}));
+      final raw = loginResp.data;
+      if (raw is! Map) return null;
+      final req = raw['req'];
+      if (req is! Map) return null;
+      final data = req['data'];
+      if (data is! Map) return null;
+      return Map<String, dynamic>.from(data);
     } catch (_) {
       return null;
     }
   }
 
-  Future<void> _exchangeKey(String qqmusicKey) async {
-    try {
-      final resp = await JXHttp.dio.get(_wxaRedirect,
-          queryParameters: {
-            'login_type': 1,
-            'surl': 'https://y.qq.com/',
-            'qqmusic_key': qqmusicKey,
-          },
-          options: Options(
-            followRedirects: false,
-            validateStatus: (s) => s != null && s < 500,
-          ));
-      _collectSetCookies(resp.headers, _loginCookies);
-    } catch (_) {
-      // 换 cookie 失败视为登录未完成
-    }
+  /// 简易 UUID v4（authorize 的 ui 参数，无强校验）
+  String get _uuidV4 {
+    final r = Random();
+    String hex(int n) =>
+        List.generate(n, (_) => r.nextInt(16).toRadixString(16)).join();
+    return '${hex(8)}-${hex(4)}-4${hex(3)}-'
+        '${(8 + r.nextInt(4)).toRadixString(16)}${hex(3)}-${hex(12)}';
   }
 }

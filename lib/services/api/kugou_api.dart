@@ -18,21 +18,55 @@ class KuGouApi implements MusicPlatformApi {
   static const String _songInfo = 'https://m.kugou.com/app/i/getSongInfo.php';
   static const String _top = 'https://www.kugou.com/yy/index.php';
 
-  // ---- 酷狗官方扫码登录（gateway/openapi.kugou.com Web 协议）----
-  static const String _gateway = 'https://gateway.kugou.com/v2';
+  // ---- 酷狗官方扫码登录（Web 登录页 login-user.kugou.com 协议）----
+  // 协议来源：www.kugou.com 登录弹窗 popuplogin.v3.min.js + kguser.v2.min.js
+  // 的 KgUser.GetQRCode / GetQRCodeState。2026-11 实测：取码 HTTP 200 返回
+  // qrcode key + data-uri PNG，轮询返回等待态（data.status=1）。
+  static const String _loginBase = 'https://login-user.kugou.com/';
+  static const String _qrcodeH5 =
+      'https://h5.kugou.com/apps/loginQRCode/html/index.html';
   static const String _kgSalt = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
+  // Web 登录固定 clientver=8131、plat=4；dfid 无 cookie 时官方 JS 用 '-'
+  static const String _clientVer = '8131';
+  static const String _dfid = '-';
+  static const String _loginReferer =
+      'https://login-user.kugou.com/login/?appid=1014';
   final Map<String, String> _cookies = {};
   String? _qrKey;
+  String? _kgMid;
 
-  // 酷狗 Web 签名：公共参数按 key 排序拼接后 MD5(salt+串+salt)
-  String _sign(Map<String, dynamic> params) {
-    final keys = params.keys.toList()..sort();
-    final str = keys.map((k) => '$k=${params[k]}').join('&');
-    return md5.convert(utf8.encode('$_kgSalt$str$_kgSalt')).toString();
+  /// 最近一次扫码操作失败原因（成功/等待时为 null，供设置页展示准确提示）
+  String? _lastError;
+
+  @override
+  String? get lastError => _lastError;
+
+  /// 酷狗 Web 登录签名（kguser.v2.min.js 的 getInterFaceKguser）：
+  /// MD5(salt + 按 key 排序的 "k=v" 直接拼接 + salt)，参数间无分隔符，MD5 大写。
+  /// 公共参数：srcappid=2919；clientver/clienttime/mid/uuid/dfid 缺省时填充。
+  Map<String, String> _sign(Map<String, String> input) {
+    final p = Map<String, String>.of(input);
+    final nowMs = '${DateTime.now().millisecondsSinceEpoch}';
+    p['srcappid'] ??= '2919';
+    if ((p['clientver'] ?? '').isEmpty) p['clientver'] = '20000';
+    if ((p['clienttime'] ?? '').isEmpty) p['clienttime'] = nowMs;
+    if ((p['mid'] ?? '').isEmpty) p['mid'] = nowMs;
+    if ((p['uuid'] ?? '').isEmpty) p['uuid'] = nowMs;
+    if ((p['dfid'] ?? '').isEmpty) p['dfid'] = '-';
+    final keys = p.keys.toList()..sort();
+    final joined = keys.map((k) => '$k=${p[k]}').join();
+    p['signature'] = md5
+        .convert(utf8.encode('$_kgSalt$joined$_kgSalt'))
+        .toString()
+        .toUpperCase();
+    return p;
   }
 
-  String _randomMid() =>
-      'JX${DateTime.now().millisecondsSinceEpoch}${Random().nextInt(9999)}';
+  /// 酷狗的 mid / uuid 为 32 位小写十六进制（官网用 MD5(GUID) 生成）
+  String _randomHex32() {
+    final r = Random.secure();
+    return List.generate(32, (_) => r.nextInt(16).toRadixString(16)).join();
+  }
 
   /// 搜索接口返回的文本里带 `<em>` 高亮标签（如 `<em>周杰伦</em>`），显示前必须清掉
   static String _clean(String? s) =>
@@ -263,79 +297,137 @@ class KuGouApi implements MusicPlatformApi {
     return '未知歌手';
   }
 
-  // ---- 扫码登录（酷狗官方 gateway 扫码协议）----
+  // ---- 扫码登录（酷狗官方 Web 登录协议，login-user.kugou.com）----
   @override
   void restoreSession(AccountSession? session) {
     _cookies.clear();
     if (session != null) _cookies.addAll(session.cookies);
     _qrKey = null;
+    _kgMid = null;
   }
 
   @override
   Future<({String qrUrl, String key})> createQrLogin() async {
-    _cookies.clear();
     _qrKey = null;
+    _kgMid = _randomHex32();
+    _lastError = null;
     try {
-      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      final common = <String, dynamic>{
-        'appid': 1014,
-        'mid': _randomMid(),
-        'uuid': _randomMid(),
-        'clienttime': '$now',
-        'dfid': '3K9V4B4Z3I9y0M5M0n2T0',
-        'signature': '',
+      // GET https://login-user.kugou.com/v2/qrcode?<签名参数>
+      final params = <String, String>{
+        'appid': '1014',
+        'clientver': _clientVer,
+        'clienttime': '${DateTime.now().millisecondsSinceEpoch}',
+        'mid': _kgMid!,
+        'uuid': _kgMid!,
+        'dfid': _dfid,
+        'type': '1',
+        'plat': '4',
+        'qrcode_txt': '$_qrcodeH5?appid=1014&',
       };
-      final p1 = Map<String, dynamic>.of(common)..addAll({'scene': 'login', 'code': '23101'});
-      final params = Map<String, dynamic>.of(p1)
-        ..['signature'] = _sign(p1);
-      final resp = await JXHttp.dio.get('$_gateway/login/qr/key',
-          queryParameters: params,
-          options: Options(headers: {'x-router': 'openapi.kugou.com'}));
-      final data = resp.data['data'] as Map<String, dynamic>?;
-      final key = data?['key'] as String?;
-      if (key == null || key.isEmpty) return (qrUrl: '', key: '');
+      final resp = await JXHttp.dio.get(
+        '${_loginBase}v2/qrcode',
+        queryParameters: _sign(params),
+        options: Options(headers: {'Referer': _loginReferer}),
+      );
+      final data = resp.data is Map ? resp.data['data'] : null;
+      final key = data is Map ? '${data['qrcode'] ?? ''}' : '';
+      if (key.isEmpty) {
+        _lastError = '酷狗取码返回空 key（接口可能已变更）';
+        return (qrUrl: '', key: '');
+      }
       _qrKey = key;
-      // 二维码内容为酷狗官方 H5 扫码授权页（带 key 参数）
-      return (qrUrl: 'https://h5.kugou.com/loginQRCode.html?key=$key', key: key);
-    } catch (_) {
+      // 官方同时返回 data.qrcode_img（`data:image/png;base64,...`，官方二维码图片）；
+      // 缺失时退化为官方 H5 扫码授权页 URL，由 qr_flutter 渲染成二维码。
+      final img = data is Map ? '${data['qrcode_img'] ?? ''}' : '';
+      final qrUrl =
+          img.isNotEmpty ? img : '$_qrcodeH5?appid=1014&qrcode=$key';
+      _lastError = null;
+      return (qrUrl: qrUrl, key: key);
+    } catch (e) {
+      _lastError = _describeError(e, '酷狗二维码获取失败');
       return (qrUrl: '', key: '');
     }
   }
 
+  /// 把网络异常翻译成用户能看懂的原因
+  String _describeError(Object error, String prefix) {
+    if (error is DioException) {
+      final code = error.response?.statusCode;
+      if (code != null) return '$prefix：HTTP $code';
+      return '$prefix：网络不可达（${error.type.name}）';
+    }
+    return '$prefix：$error';
+  }
+
   @override
   Future<AccountSession?> pollQrLogin(String key) async {
-    if (_qrKey != key) return null;
+    if (key.isEmpty || _qrKey != key) return null;
     try {
-      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-      final common = <String, dynamic>{
-        'appid': 1014,
-        'mid': _randomMid(),
-        'uuid': _randomMid(),
-        'clienttime': '$now',
-        'dfid': '3K9V4B4Z3I9y0M5M0n2T0',
-        'signature': '',
+      // GET https://login-user.kugou.com/v2/get_userinfo_qrcode?<签名参数>
+      // 返回 data.status：0 过期 / 1 等待 / 2 已扫码待确认 / 4 登录成功
+      final mid = _kgMid ?? _randomHex32();
+      final params = <String, String>{
+        'appid': '1014',
+        'clientver': _clientVer,
+        'clienttime': '${DateTime.now().millisecondsSinceEpoch}',
+        'mid': mid,
+        'uuid': mid,
+        'dfid': _dfid,
+        'plat': '4',
+        'qrcode': key,
       };
-      final p1 = Map<String, dynamic>.of(common)
-        ..addAll({'key': key, 'scene': 'login', 'code': '23101'});
-      final params = Map<String, dynamic>.of(p1)
-        ..['signature'] = _sign(p1);
-      final resp = await JXHttp.dio.get('$_gateway/login/qr/check',
-          queryParameters: params,
-          options: Options(headers: {'x-router': 'openapi.kugou.com'}));
-      final data = resp.data['data'] as Map<String, dynamic>?;
-      final status = data?['status'] as int?;
-      if (data == null || status == null || status != 4) {
-        return null; // 0/1 等待, 2 已扫码, 3 已确认, 4 成功
+      final resp = await JXHttp.dio.get(
+        '${_loginBase}v2/get_userinfo_qrcode',
+        queryParameters: _sign(params),
+        options: Options(headers: {'Referer': _loginReferer}),
+      );
+      final root = resp.data is Map ? resp.data as Map : null;
+      if (root == null) {
+        _lastError = '酷狗轮询返回空响应（接口可能已变更）';
+        return null;
       }
-      final nickname = data['nickname'] as String? ?? '酷狗用户';
-      _cookies['userid'] = '${data['userid'] ?? ''}';
-      _cookies['token'] = '${data['token'] ?? ''}';
+      if (root['status'] != 1) {
+        final code = root['error_code'];
+        _lastError = '酷狗轮询失败（error_code=$code）';
+        return null;
+      }
+      final data = root['data'];
+      if (data is! Map) {
+        _lastError = '酷狗轮询返回数据异常';
+        return null;
+      }
+      final status = (data['status'] as num?)?.toInt() ?? 0;
+      if (status == 2) {
+        _lastError = null; // 已扫码待确认
+        return null;
+      }
+      if (status == 0) {
+        _lastError = '二维码已过期，请关闭后重新获取';
+        return null;
+      }
+      if (status != 4) {
+        _lastError = null; // 其余按等待处理
+        return null;
+      }
+      final userid = '${data['userid'] ?? ''}';
+      final token = '${data['token'] ?? ''}';
+      if (userid.isEmpty && token.isEmpty) {
+        _lastError = '酷狗登录成功但凭证缺失';
+        return null;
+      }
+      final nickname = '${data['nickname'] ?? ''}'.trim();
+      final pic = '${data['pic'] ?? data['headimg'] ?? ''}';
+      _cookies['userid'] = userid;
+      _cookies['token'] = token;
+      _lastError = null;
       return AccountSession(
         platform: platform,
         cookies: Map.of(_cookies),
-        nickname: nickname,
+        nickname: nickname.isEmpty ? '酷狗用户' : nickname,
+        avatarUrl: pic.isEmpty ? null : jxNormalizeImageUrl(pic),
       );
-    } catch (_) {
+    } catch (e) {
+      _lastError = _describeError(e, '酷狗扫码轮询失败');
       return null;
     }
   }

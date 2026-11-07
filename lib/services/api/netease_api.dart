@@ -11,6 +11,10 @@ class NeteaseApi implements MusicPlatformApi {
   @override
   int get platform => 1;
 
+  /// 网易云扫码失败原因（接口通常直接抛异常，这里保持空实现即可）
+  @override
+  String? get lastError => null;
+
   // 公开 webapi 接口（无登录态基础能力）
   static const String _base = 'https://music.163.com/api';
   static const String _baseWeb = 'https://music.163.com/weapi';

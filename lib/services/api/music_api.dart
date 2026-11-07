@@ -32,6 +32,10 @@ abstract class MusicPlatformApi {
 
   /// 恢复持久化的登录态（应用启动时调用，把 cookie 灌回平台客户端）
   void restoreSession(AccountSession? session);
+
+  /// 最近一次扫码相关操作的失败原因（成功/等待时为 null）。
+  /// UI 用它展示准确原因；默认无错误，平台实现可覆盖。
+  String? get lastError => null;
 }
 
 /// 多平台聚合入口
