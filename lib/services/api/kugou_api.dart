@@ -38,7 +38,8 @@ class KuGouApi implements MusicPlatformApi {
   static String _clean(String? s) =>
       (s ?? '').replaceAll(RegExp(r'</?em>'), '').trim();
 
-  /// 酷狗图片地址形如 http://imge.kugou.com/stdmusic/{size}/... ，需要替换尺寸并升级 https
+  /// 酷狗图片地址形如 http://imge.kugou.com/stdmusic/{size}/... 或
+  /// https://imgessl.kugou.com/custom/{size}/... ，需要替换尺寸并升级 https
   static String _image(String? url) {
     if (url == null || url.isEmpty) return '';
     return jxNormalizeImageUrl(url.replaceAll('{size}', '240'));
@@ -72,7 +73,7 @@ class KuGouApi implements MusicPlatformApi {
           duration: m['TimeLength'] is int
               ? m['TimeLength'] as int
               : int.tryParse('${m['TimeLength']}') ?? 0,
-          vip: (m['Privilege'] as int? ?? 0) > 0,
+          vip: (m['Privilege'] as int? ?? 0) >= 10,
         );
       }).toList();
     } catch (_) {
@@ -115,13 +116,46 @@ class KuGouApi implements MusicPlatformApi {
 
   @override
   Future<String> getLyrics(Song song) async {
+    // 官方歌词链路：krcs.kugou.com/search 找候选 -> lyrics.kugou.com/download 取 LRC
+    // （返回的 content 是 base64 的 LRC 文本，且带 UTF-8 BOM）
     try {
-      final resp = await JXHttp.dio.get(
-          'https://krcs.kugou.com/get',
-          queryParameters: {'ver': 1, 'hash': song.id, 'platid': 4});
-      final content = resp.data['content'] as String?;
+      final search = await JXHttp.dio.get(
+        'https://krcs.kugou.com/search',
+        queryParameters: {
+          'ver': 1,
+          'man': 'yes',
+          'client': 'mobi',
+          'keyword': '',
+          'duration': song.duration * 1000,
+          'hash': song.id,
+          'album_audio_id': '',
+        },
+      );
+      final candidates = (search.data['candidates'] as List?) ?? const [];
+      if (candidates.isEmpty) return '';
+      final first = candidates.first as Map;
+      final id = first['id'];
+      final accessKey = first['accesskey'];
+      if (id == null || accessKey == null) return '';
+      final download = await JXHttp.dio.get(
+        'https://lyrics.kugou.com/download',
+        queryParameters: {
+          'ver': 1,
+          'client': 'pc',
+          'id': '$id',
+          'accesskey': '$accessKey',
+          'fmt': 'lrc',
+          'charset': 'utf8',
+        },
+      );
+      final content = download.data['content'] as String?;
       if (content == null || content.isEmpty) return '';
-      return utf8.decode(base64Url.decode(content), allowMalformed: true);
+      var text = utf8.decode(
+        base64Decode(content.replaceAll(RegExp(r'\s'), '')),
+        allowMalformed: true,
+      );
+      if (text.startsWith('\uFEFF')) text = text.substring(1);
+      return text;
     } catch (_) {
       return '';
     }
@@ -130,15 +164,67 @@ class KuGouApi implements MusicPlatformApi {
   @override
   Future<List<Playlist>> recommendPlaylists(
       {int page = 1, int size = 20}) async {
-    return const [];
+    // m.kugou.com/plist/index 返回推荐歌单（每页 30 条，支持 page 参数）
+    try {
+      final resp = await JXHttp.dio.get(
+        'https://m.kugou.com/plist/index',
+        queryParameters: {
+          'json': 'true',
+          'page': page,
+          'pagesize': size,
+        },
+      );
+      final list = (resp.data['plist']?['list']?['info'] as List?) ?? const [];
+      return list.map<Playlist>((p) {
+        final m = p as Map<String, dynamic>;
+        return Playlist(
+          id: '${m['specialid']}',
+          platform: platform,
+          title: _clean(m['specialname'] as String?),
+          coverUrl: _image(m['imgurl'] as String?),
+          creator: _clean(m['username'] as String?),
+          songCount: (m['songcount'] as num?)?.toInt() ?? 0,
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
   }
 
   @override
   Future<List<Song>> playlistSongs(Playlist playlist,
       {int page = 1, int size = 100}) async {
-    // 酷狗歌单详情只有网页版 jsonp 接口（www.kugou.com/yy/special/single/{id}.html），
-    // 暂未接入，返回空列表；UI 会提示"该平台暂不支持歌单"。
-    return const [];
+    // mobiles.kugou.com 的歌单详情接口，返回 data.info 歌曲数组
+    try {
+      final resp = await JXHttp.dio.get(
+        'https://mobiles.kugou.com/api/v3/special/song',
+        queryParameters: {
+          'specialid': playlist.id,
+          'page': page,
+          'pagesize': size,
+          'plat': 0,
+          'version': 8000,
+        },
+      );
+      final list = (resp.data['data']?['info'] as List?) ?? const [];
+      return list.map<Song>((s) {
+        final m = s as Map<String, dynamic>;
+        final filename = _clean(m['filename'] as String?);
+        final cover = (m['trans_param'] as Map?)?['union_cover'] as String?;
+        return Song(
+          id: m['hash'] as String? ?? '',
+          platform: platform,
+          title: filename,
+          artist: _parseArtist(filename),
+          album: '',
+          coverUrl: _image(cover),
+          duration: (m['duration'] as num?)?.toInt() ?? 0,
+          vip: (m['privilege'] as int? ?? 0) >= 10,
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
   }
 
   @override

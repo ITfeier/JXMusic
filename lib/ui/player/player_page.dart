@@ -5,6 +5,7 @@ import '../../core/constants.dart';
 import '../../models/song.dart';
 import '../../models/lyric.dart';
 import '../../providers.dart';
+import '../../services/download_service.dart';
 import '../../services/player_service.dart';
 import '../glass.dart';
 
@@ -128,13 +129,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                     GlassIconButton(
                       icon: Icons.more_horiz_rounded,
                       size: 36,
-                      onPressed: () {
-                        showModalBottomSheet(
-                          context: context,
-                          backgroundColor: Colors.transparent,
-                          builder: (_) => const _QueueSheet(),
-                        );
-                      },
+                      onPressed: _showMoreSheet,
                     ),
                   ],
                 ),
@@ -295,6 +290,77 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
         ),
       ),
     );
+  }
+
+  /// 更多菜单：播放队列 / 下载当前歌曲
+  Future<void> _showMoreSheet() async {
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _MoreSheet(),
+    );
+    if (!mounted) return;
+    if (picked == 'queue') {
+      await showModalBottomSheet(
+        context: context,
+        backgroundColor: Colors.transparent,
+        builder: (_) => const _QueueSheet(),
+      );
+    } else if (picked == 'download') {
+      await _downloadCurrent();
+    }
+  }
+
+  /// 下载当前歌曲：先解析播放直链（未解析过时），带进度弹窗写入本地
+  Future<void> _downloadCurrent() async {
+    final song = ref.read(playerServiceProvider).currentSong;
+    if (song == null) return;
+    if (song.platform == JXPlatform.local) {
+      _toast('本地文件已在磁盘上，无需下载');
+      return;
+    }
+    final api = ref.read(musicHubProvider).api(song.platform);
+    if (api == null) {
+      _toast('该平台暂不支持下载');
+      return;
+    }
+    final progress = ValueNotifier<double>(0);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    var dialogOpen = true;
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) =>
+          _DownloadProgressDialog(progress: progress, title: song.title),
+    );
+    try {
+      final url = song.audioUrl ?? await api.getPlayUrl(song);
+      if (url == null || url.isEmpty) {
+        if (dialogOpen) navigator.pop();
+        dialogOpen = false;
+        _toast('无法获取下载链接：该歌曲可能需要登录对应平台或为 VIP 专享');
+        return;
+      }
+      final saved = await DownloadService.instance.download(
+        song.copyWith(audioUrl: url),
+        onProgress: (v) => progress.value = v,
+      );
+      if (dialogOpen) navigator.pop();
+      dialogOpen = false;
+      _toast('已保存到：$saved');
+    } catch (e) {
+      if (dialogOpen) navigator.pop();
+      dialogOpen = false;
+      _toast('下载失败：$e');
+    } finally {
+      progress.dispose();
+    }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _cycleLoop(PlayerService player) {
@@ -523,6 +589,104 @@ class _LyricsViewState extends State<_LyricsView> {
           ),
         );
       },
+    );
+  }
+}
+
+/// 更多菜单弹层（播放队列 / 下载）
+class _MoreSheet extends StatelessWidget {
+  const _MoreSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: GlassCard(
+          borderRadius: BorderRadius.circular(24),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.queue_music_rounded,
+                    color: JXColors.primary),
+                title: const Text('播放队列', style: TextStyle(fontSize: 14)),
+                onTap: () => Navigator.of(context).pop('queue'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.download_rounded,
+                    color: JXColors.primary),
+                title: const Text('下载当前歌曲', style: TextStyle(fontSize: 14)),
+                subtitle: Text(
+                  '保存到下载目录下的 JXMusic 文件夹',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: isDark
+                        ? JXColors.textOnDarkSecondary
+                        : JXColors.textSecondary,
+                  ),
+                ),
+                onTap: () => Navigator.of(context).pop('download'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 下载进度弹窗
+class _DownloadProgressDialog extends StatelessWidget {
+  final ValueNotifier<double> progress;
+  final String title;
+
+  const _DownloadProgressDialog({
+    required this.progress,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('正在下载', style: TextStyle(fontSize: 16)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          ValueListenableBuilder<double>(
+            valueListenable: progress,
+            builder: (context, value, _) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  LinearProgressIndicator(
+                    value: value > 0 ? value : null,
+                    color: JXColors.primary,
+                    backgroundColor: Colors.grey.withValues(alpha: 0.2),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    value > 0
+                        ? '${(value * 100).toStringAsFixed(0)}%'
+                        : '连接中…',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
     );
   }
 }

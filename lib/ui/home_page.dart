@@ -49,12 +49,15 @@ class _HomePageState extends ConsumerState<HomePage> {
         }(),
     ];
 
-    // 推荐歌单（网易云）
+    // 推荐歌单：网易云 + 酷狗聚合
     futures.add(() async {
-      final api = hub.api(JXPlatform.netease);
-      if (api == null) return;
-      final list = await api.recommendPlaylists(size: 20);
-      if (mounted) setState(() => _playlists = list);
+      final lists = <Playlist>[];
+      for (final p in const [JXPlatform.netease, JXPlatform.kugou]) {
+        final api = hub.api(p);
+        if (api == null) continue;
+        lists.addAll(await api.recommendPlaylists(size: 12));
+      }
+      if (mounted) setState(() => _playlists = lists);
     }());
 
     try {
@@ -156,9 +159,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                                       borderRadius: BorderRadius.circular(10),
                                     ),
                                     child: Text(
-                                      p.songCount > 0
-                                          ? '${p.songCount} 首'
-                                          : '推荐',
+                                      '${_platformShort(p.platform)}'
+                                      '${p.songCount > 0 ? ' · ${p.songCount} 首' : ' · 推荐'}',
                                       style: const TextStyle(
                                           fontSize: 10,
                                           color: Colors.white,
@@ -593,3 +595,17 @@ class _RankCard extends StatelessWidget {
 
 // 复用歌词解析（避免与 models 冲突的简写）
 List<LyricLine> parseLrc(String lrc) => LyricParser.parseLrc(lrc);
+
+/// 歌单卡片上的平台短名
+String _platformShort(int platform) {
+  switch (platform) {
+    case JXPlatform.netease:
+      return '网易云';
+    case JXPlatform.kugou:
+      return '酷狗';
+    case JXPlatform.qq:
+      return 'QQ音乐';
+    default:
+      return '本地';
+  }
+}

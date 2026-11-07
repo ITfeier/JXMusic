@@ -27,6 +27,32 @@ class Song {
   /// 全局唯一键：platform:id
   String get globalId => '$platform:$id';
 
+  /// 复制并覆盖部分字段（播放/下载时用来注入解析出的 audioUrl 等）
+  Song copyWith({
+    String? id,
+    int? platform,
+    String? title,
+    String? artist,
+    String? album,
+    String? coverUrl,
+    String? audioUrl,
+    int? duration,
+    bool? vip,
+    bool? loginRequired,
+  }) =>
+      Song(
+        id: id ?? this.id,
+        platform: platform ?? this.platform,
+        title: title ?? this.title,
+        artist: artist ?? this.artist,
+        album: album ?? this.album,
+        coverUrl: coverUrl ?? this.coverUrl,
+        audioUrl: audioUrl ?? this.audioUrl,
+        duration: duration ?? this.duration,
+        vip: vip ?? this.vip,
+        loginRequired: loginRequired ?? this.loginRequired,
+      );
+
   String get displayPlatform {
     switch (platform) {
       case 0:

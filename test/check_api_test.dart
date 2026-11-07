@@ -20,5 +20,8 @@ void main() {
       print('qq ERR: $e');
       print(st.toString().split('\n').take(8).join('\n'));
     }
-  }, timeout: const Timeout(Duration(minutes: 2)));
+  }, timeout: const Timeout(Duration(minutes: 2)),
+      // 需要真实联网的接口连通性排查脚本，默认跳过，避免 CI/本地 `flutter test` 变红。
+      // 手动运行：flutter test test/check_api_test.dart --run-skipped
+      skip: '需要联网的扫码接口探测，按需用 --run-skipped 手动执行');
 }
