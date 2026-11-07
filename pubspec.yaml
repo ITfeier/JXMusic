@@ -1,0 +1,45 @@
+name: jxmusic
+description: "JXMusic - 聚合音乐播放器（QQ音乐/网易云/酷狗/本地音乐）"
+publish_to: 'none'
+version: 0.2.0+2
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 网络
+  dio: ^5.7.0
+  # 状态管理
+  flutter_riverpod: ^2.6.1
+  # 播放引擎（libmpv，Windows/Android 双端）
+  media_kit: ^1.1.11
+  media_kit_video: ^1.2.5
+  media_kit_libs_video: ^1.0.5
+  # 本地存储
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  # 工具
+  path_provider: ^2.1.5
+  path: ^1.9.0
+  crypto: ^3.0.6
+  uuid: ^4.5.1
+  # Windows 窗口管理
+  window_manager: ^0.4.3
+  # 权限（Android）
+  permission_handler: ^11.3.1
+  # 音频元数据读取
+  audio_metadata_reader: ^1.8.1
+  # 加密（网易云 weapi 签名）
+  pointycastle: ^3.9.1
+  # 二维码（扫码登录本地渲染）
+  qr_flutter: ^4.1.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

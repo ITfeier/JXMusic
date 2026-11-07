@@ -1,0 +1,264 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:media_kit/media_kit.dart';
+import '../models/song.dart';
+import '../models/lyric.dart';
+
+/// 播放器服务：基于 media_kit (libmpv)，Windows/Android 双端
+class PlayerService extends ChangeNotifier {
+  PlayerService() {
+    _init();
+  }
+
+  Player? _player;
+
+  // 播放状态
+  bool _playing = false;
+  bool get playing => _playing;
+
+  Duration _position = Duration.zero;
+  Duration get position => _position;
+
+  Duration _duration = Duration.zero;
+  Duration get duration => _duration;
+
+  // 队列
+  final List<Song> _queue = [];
+  List<Song> get queue => List.unmodifiable(_queue);
+
+  int _currentIndex = -1;
+  int get currentIndex => _currentIndex;
+  Song? get currentSong => _currentIndex >= 0 && _currentIndex < _queue.length
+      ? _queue[_currentIndex]
+      : null;
+
+  // 循环模式：0 顺序 / 1 单曲 / 2 列表循环 / 3 随机
+  int _loopMode = 2;
+  int get loopMode => _loopMode;
+
+  // 音量 0-100
+  double _volume = 80;
+  double get volume => _volume;
+
+  // 歌词
+  List<LyricLine> _lyrics = [];
+  List<LyricLine> get lyrics => _lyrics;
+  int _lyricIndex = -1;
+  int get lyricIndex => _lyricIndex;
+
+  StreamSubscription? _posSub;
+  StreamSubscription? _durSub;
+  StreamSubscription? _playSub;
+  StreamSubscription? _completeSub;
+  StreamSubscription? _playlistSub;
+
+  Future<void> _init() async {
+    _player = Player();
+    _player?.setVolume(_volume);
+
+    _posSub = _player?.stream.position.listen((p) {
+      _position = p;
+      _updateLyricIndex();
+      notifyListeners();
+    });
+    _durSub = _player?.stream.duration.listen((d) {
+      _duration = d;
+      notifyListeners();
+    });
+    _playSub = _player?.stream.playing.listen((p) {
+      _playing = p;
+      notifyListeners();
+    });
+    _completeSub = _player?.stream.completed.listen((_) {
+      _onTrackComplete();
+    });
+  }
+
+  void _updateLyricIndex() {
+    if (_lyrics.isEmpty) {
+      _lyricIndex = -1;
+      return;
+    }
+    final ms = _position.inMilliseconds;
+    var idx = -1;
+    for (var i = 0; i < _lyrics.length; i++) {
+      if (ms >= _lyrics[i].time) {
+        idx = i;
+      } else {
+        break;
+      }
+    }
+    if (idx != _lyricIndex) {
+      _lyricIndex = idx;
+    }
+  }
+
+  Future<void> _onTrackComplete() async {
+    if (_queue.isEmpty) return;
+    switch (_loopMode) {
+      case 1: // 单曲循环
+        await seek(Duration.zero);
+        await play();
+        break;
+      case 3: // 随机
+        final next = _queue[_randomIndex()];
+        await playSong(next);
+        break;
+      default:
+        final next = _currentIndex + 1;
+        if (next < _queue.length) {
+          await _playAt(next);
+        } else if (_loopMode == 2) {
+          await _playAt(0);
+        }
+    }
+  }
+
+  int _randomIndex() {
+    if (_queue.length <= 1) return 0;
+    var r = _currentIndex;
+    while (r == _currentIndex) {
+      r = DateTime.now().millisecondsSinceEpoch % _queue.length;
+    }
+    return r;
+  }
+
+  /// 播放单曲：若在队列中则定位，否则替换队列
+  Future<void> playSong(Song song, {List<Song>? queue}) async {
+    if (queue != null) {
+      _queue
+        ..clear()
+        ..addAll(queue);
+      final idx = _queue.indexWhere(
+          (s) => s.globalId == song.globalId);
+      _currentIndex = idx >= 0 ? idx : 0;
+    } else {
+      final idx =
+          _queue.indexWhere((s) => s.globalId == song.globalId);
+      if (idx >= 0) {
+        _currentIndex = idx;
+      } else {
+        _queue.add(song);
+        _currentIndex = _queue.length - 1;
+      }
+    }
+    await _playAt(_currentIndex);
+  }
+
+  /// 加入队列并播放（不替换现有队列）
+  Future<void> addToQueueAndPlay(Song song) async {
+    _queue.add(song);
+    _currentIndex = _queue.length - 1;
+    await _playAt(_currentIndex);
+  }
+
+  Future<void> _playAt(int index) async {
+    if (index < 0 || index >= _queue.length) return;
+    _currentIndex = index;
+    final song = _queue[index];
+    final url = song.audioUrl;
+    if (url == null || url.isEmpty) {
+      // 无直链，尝试解析（由上层负责注入 audioUrl）
+      debugPrint('[JXMusic] 歌曲无可播放链接: ${song.title}');
+      notifyListeners();
+      return;
+    }
+    _lyrics = const [];
+    _lyricIndex = -1;
+    try {
+      // 平台 CDN 播放需对应 Referer 头（QQ/酷狗/网易云各不相同）
+      Map<String, String>? headers;
+      if (song.platform == 0) {
+        headers = {'Referer': 'https://y.qq.com/'};
+      } else if (song.platform == 1) {
+        headers = {'Referer': 'https://music.163.com/'};
+      } else if (song.platform == 2) {
+        headers = {'Referer': 'https://m.kugou.com/'};
+      }
+      await _player?.open(Media(url, httpHeaders: headers), play: true);
+    } catch (e) {
+      debugPrint('[JXMusic] 播放失败: $e');
+    }
+    notifyListeners();
+  }
+
+  Future<void> play() => _player?.play() ?? Future.value();
+  Future<void> pause() => _player?.pause() ?? Future.value();
+
+  Future<void> toggle() =>
+      _playing ? pause() : play();
+
+  Future<void> seek(Duration d) => _player?.seek(d) ?? Future.value();
+
+  Future<void> next() async {
+    if (_queue.isEmpty) return;
+    final next = _loopMode == 3 ? _randomIndex() : _currentIndex + 1;
+    if (next >= _queue.length) {
+      if (_loopMode == 2) {
+        await _playAt(0);
+      }
+      return;
+    }
+    await _playAt(next);
+  }
+
+  Future<void> previous() async {
+    if (_queue.isEmpty) return;
+    // 播放超过 3 秒则回到开头
+    if (_position.inSeconds > 3) {
+      await seek(Duration.zero);
+      return;
+    }
+    final prev = _currentIndex - 1;
+    if (prev >= 0) {
+      await _playAt(prev);
+    } else if (_loopMode == 2) {
+      await _playAt(_queue.length - 1);
+    }
+  }
+
+  void setLoopMode(int mode) {
+    _loopMode = mode;
+    notifyListeners();
+  }
+
+  Future<void> setVolume(double v) async {
+    _volume = v.clamp(0, 100);
+    await _player?.setVolume(_volume);
+    notifyListeners();
+  }
+
+  /// 注入歌词
+  void setLyrics(List<LyricLine> lines) {
+    _lyrics = lines;
+    _lyricIndex = -1;
+    _updateLyricIndex();
+    notifyListeners();
+  }
+
+  /// 移除队列中某歌曲
+  void removeFromQueue(int index) {
+    if (index < 0 || index >= _queue.length) return;
+    _queue.removeAt(index);
+    if (index < _currentIndex) _currentIndex--;
+    notifyListeners();
+  }
+
+  void clearQueue() {
+    _queue.clear();
+    _currentIndex = -1;
+    _lyrics = const [];
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _posSub?.cancel();
+    _durSub?.cancel();
+    _playSub?.cancel();
+    _completeSub?.cancel();
+    _playlistSub?.cancel();
+    _player?.dispose();
+    super.dispose();
+  }
+}
