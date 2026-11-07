@@ -1,10 +1,11 @@
 // QQ 音乐扫码登录链路探测脚本（手动运行，可复现验收证据）：
 //   dart run tool/check_qq_qr.dart
 //
-// 输出三段证据：
+// 输出四段证据：
 //   1) 原始 ptqrshow 取码：HTTP 状态、PNG 字节数/尺寸、qrsig 长度
 //   2) 原始 ptqrlogin 轮询：HTTP 状态、ptuiCB code（未扫码应为 66 等待态）
 //   3) 走真实 QQMusicApi 实现：createQrLogin() / pollQrLogin() 行为
+//   4) 扫码后兑换链路候选端点可达性（假参数，证明端点/风控状态，不证明业务成功）
 import 'dart:convert';
 import 'dart:io';
 
@@ -136,6 +137,111 @@ Future<void> main() async {
   }
 
   print('');
+  print('=== 4) 兑换链路候选端点可达性（假参数，仅证明端点/风控，不证明业务成功）===');
+  try {
+    final sig = await JXHttp.dio.get(
+        'https://ssl.ptlogin2.graph.qq.com/check_sig',
+        queryParameters: {
+          'uin': 'o0123456789',
+          'pttype': '1',
+          'service': 'ptqrlogin',
+          'nodirect': '0',
+          'ptsigx': 'FAKE_SIGX_PROBE',
+          's_url': _loginJump,
+          'ptlang': '2052',
+          'ptredirect': '100',
+          'aid': _appid,
+          'daid': _daid,
+          'j_later': '0',
+          'low_login_hour': '0',
+          'regmaster': '0',
+          'pt_login_type': '3',
+          'pt_aid': '0',
+          'pt_aaid': '16',
+          'pt_light': '0',
+          'pt_3rd_aid': _pt3rdAid,
+        },
+        options: Options(
+          followRedirects: false,
+          validateStatus: (s) => s != null && s < 500,
+          headers: {'Referer': _referer},
+        ));
+    print('check_sig  : HTTP=${sig.statusCode}  '
+        'location=${_cut(sig.headers.value('location') ?? '-')}');
+  } catch (e) {
+    print('check_sig 异常：$e');
+  }
+
+  try {
+    final auth = await JXHttp.dio.post(
+        'https://graph.qq.com/oauth2.0/authorize',
+        data: {
+          'response_type': 'code',
+          'client_id': _pt3rdAid,
+          'redirect_uri':
+              'https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/',
+          'state': 'state',
+        },
+        options: Options(
+          contentType: Headers.formUrlEncodedContentType,
+          followRedirects: false,
+          validateStatus: (s) => s != null && s < 500,
+          headers: {
+            'Referer': 'https://graph.qq.com/',
+            'Cookie': 'p_skey=FAKE_PROBE',
+          },
+        ));
+    print('authorize  : HTTP=${auth.statusCode}  '
+        'location=${_cut(auth.headers.value('location') ?? '-')}');
+  } catch (e) {
+    print('authorize 异常：$e');
+  }
+
+  final qqLoginPayload = jsonEncode({
+    'comm': {
+      'ct': 24,
+      'cv': 4747474,
+      'platform': 'yqq.json',
+      'format': 'json',
+      'inCharset': 'utf-8',
+      'outCharset': 'utf-8',
+      'notice': 0,
+      'need_new_code': 1,
+      'tmeLoginType': 2,
+    },
+    'req': {
+      'module': 'QQConnectLogin.LoginServer',
+      'method': 'QQLogin',
+      'param': {'code': 'fake'},
+    },
+  });
+  for (final base in const [
+    'https://u.y.qq.com/cgi-bin/musicu.fcg',
+    'https://u6.y.qq.com/cgi-bin/musicu.fcg',
+    'https://u.y.qq.com/cgi-bin/musics.fcg',
+  ]) {
+    try {
+      final r = await JXHttp.dio.get(base,
+          queryParameters: {'format': 'json', 'data': qqLoginPayload},
+          options: Options(headers: {'Referer': 'https://y.qq.com/'}));
+      final raw = r.data;
+      final outer = raw is Map ? raw['code'] : '-';
+      final req = raw is Map ? (raw['req'] ?? raw['req_0']) : null;
+      final biz = req is Map ? req['code'] : '-';
+      print('QQLogin    : $base -> HTTP=${r.statusCode} '
+          '外层code=$outer 业务code=$biz');
+    } catch (e) {
+      print('QQLogin    : $base 异常：$e');
+    }
+  }
+  print('（假 code=fake：主/备1 返回业务 code=1000 属预期；'
+      '备2 musics.fcg 需 zzc sign，返回 2000）');
+  print('（真机扫码后的 check_sig→authorize→QQLogin 全链路未端到端验证）');
+
+  print('');
   print(failed ? '结果：FAIL（见上方标红项）' : '结果：PASS（取码为真二维码，轮询处于等待态）');
   exitCode = failed ? 1 : 0;
 }
+
+/// 截断长 URL/字符串，便于输出对照
+String _cut(String s, [int n = 120]) => s.length <= n ? s : s.substring(0, n);

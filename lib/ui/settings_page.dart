@@ -202,7 +202,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.8.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.9.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',
@@ -380,8 +380,15 @@ Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) asy
   // 持久化登录态（Hive）+ 同步平台客户端 cookie，重启后依然有效
   ref.read(accountProvider(platform).notifier).login(account);
   ref.read(musicHubProvider).api(platform)?.restoreSession(account);
+  // 降级登录（如酷狗 token 交换失败）时接口层会写 lastError，这里如实提示用户
+  final warning = api.lastError;
+  final name = JXPlatform.name(platform);
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('${JXPlatform.name(platform)}登录成功：${account.nickname}')),
+    SnackBar(
+      content: Text(warning != null && warning.trim().isNotEmpty
+          ? '$name 已登录（${account.nickname}），但$warning'
+          : '$name登录成功：${account.nickname}'),
+    ),
   );
 }
 
@@ -402,6 +409,10 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
   Timer? _timer;
   int _polls = 0;
   bool _done = false;
+
+  /// 轮询互斥：兑换登录态最长 10~20 秒，2 秒定时器不能在兑换未完成时再发一次，
+  /// 否则同一酷狗 token / QQ ptsigx 可能被并发兑换多次，或先落降级会话、后到成功结果。
+  bool _polling = false;
 
   @override
   void initState() {
@@ -444,13 +455,14 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
   }
 
   Future<void> _poll(String key) async {
-    if (_done) return;
+    if (_done || _polling) return;
     if (_polls >= 60) {
       _timer?.cancel();
       setState(() => _hint = '二维码已过期，请关闭后重试');
       return;
     }
     _polls++;
+    _polling = true;
     try {
       final session = await widget.api.pollQrLogin(key);
       if (!mounted || _done) return;
@@ -470,6 +482,8 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
       }
     } catch (_) {
       // 单次轮询失败忽略，继续下一轮
+    } finally {
+      _polling = false;
     }
   }
 
