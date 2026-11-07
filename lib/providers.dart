@@ -106,6 +106,10 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     onSongStarted: library.addHistory,
     urlResolver: resolveUrl,
     lyricsResolver: resolveLyrics,
+    onSettingChanged: saveSetting,
+    initialVolume: _readSettingsDouble('volume', 80),
+    initialLoopMode: _readSettingsInt('loopMode', 2),
+    initialSpeed: _readSettingsDouble('speed', 1.0),
   );
   ref.onDispose(service.dispose);
   return service;
@@ -133,6 +137,32 @@ void saveSetting(String key, dynamic value) {
   final box = Hive.box<dynamic>(JXConstants.hiveBoxSettings);
   box.put(key, value is Color ? value.toARGB32() : value);
 }
+
+/// 从设置里读数值（带默认值）
+double _readSettingsDouble(String key, double fallback) {
+  try {
+    final v = Hive.box<dynamic>(JXConstants.hiveBoxSettings).get(key);
+    if (v is num) return v.toDouble();
+  } catch (_) {}
+  return fallback;
+}
+
+int _readSettingsInt(String key, int fallback) {
+  try {
+    final v = Hive.box<dynamic>(JXConstants.hiveBoxSettings).get(key);
+    if (v is num) return v.toInt();
+  } catch (_) {}
+  return fallback;
+}
+
+/// 窗口置顶（Windows 桌面）
+final alwaysOnTopProvider = StateProvider<bool>((ref) {
+  try {
+    final v = Hive.box<dynamic>(JXConstants.hiveBoxSettings).get('alwaysOnTop');
+    if (v is bool) return v;
+  } catch (_) {}
+  return false;
+});
 
 /// 当前页面索引（导航）
 final navIndexProvider = StateProvider<int>((ref) => 0);

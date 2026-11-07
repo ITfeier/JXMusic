@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:window_manager/window_manager.dart';
 import '../core/constants.dart';
 import '../providers.dart';
 import '../services/api/http.dart';
@@ -99,6 +101,38 @@ class SettingsPage extends ConsumerWidget {
           ),
         ),
 
+        // ---- 桌面（仅 Windows） ----
+        if (Platform.isWindows) ...[
+          const _SectionLabel('桌面'),
+          GlassCard(
+            margin: const EdgeInsets.only(bottom: 12),
+            child: Column(
+              children: [
+                _SwitchTile(
+                  icon: Icons.push_pin_rounded,
+                  title: '窗口置顶',
+                  subtitle: '让播放器始终显示在其他窗口之上',
+                  value: ref.watch(alwaysOnTopProvider),
+                  onChanged: (v) async {
+                    ref.read(alwaysOnTopProvider.notifier).state = v;
+                    saveSetting('alwaysOnTop', v);
+                    await windowManager.setAlwaysOnTop(v);
+                  },
+                ),
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Text(
+                    '快捷键：空格 播放/暂停 · ← → 快退/快进 5 秒 · ↑ ↓ 音量 · M 静音 · N/P 上一首/下一首',
+                    style:
+                        TextStyle(fontSize: 11, height: 1.6, color: textSub),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+
         // ---- 账号与登录 ----
         const _SectionLabel('账号与登录'),
         GlassCard(
@@ -156,7 +190,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.5.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.6.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',

@@ -4,6 +4,7 @@ import 'package:jxmusic/models/lyric.dart';
 import 'package:jxmusic/models/song.dart';
 import 'package:jxmusic/services/api/http.dart';
 import 'package:jxmusic/services/download_service.dart';
+import 'package:jxmusic/ui/layout.dart';
 
 void main() {
   test('AccountSession 可 JSON 往返（登录态持久化依赖）', () {
@@ -66,5 +67,13 @@ void main() {
     expect(DownloadService.headersFor(JXPlatform.kugou)['Referer'],
         'https://m.kugou.com/');
     expect(DownloadService.headersFor(JXPlatform.local), isEmpty);
+  });
+
+  test('播放速度格式化', () {
+    expect(jxFormatSpeed(1.0), '1.0x');
+    expect(jxFormatSpeed(0.75), '0.75x');
+    expect(jxFormatSpeed(1.25), '1.25x');
+    expect(jxFormatSpeed(2.0), '2.0x');
+    expect(jxFormatSpeed(0.5), '0.5x');
   });
 }

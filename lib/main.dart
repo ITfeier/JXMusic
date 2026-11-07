@@ -33,6 +33,13 @@ Future<void> main() async {
     await windowManager.waitUntilReadyToShow(options, () async {
       await windowManager.setTitleBarStyle(TitleBarStyle.hidden,
           windowButtonVisibility: true);
+      // 恢复上次的窗口置顶偏好
+      final alwaysOnTop = Hive.box<dynamic>(JXConstants.hiveBoxSettings)
+              .get('alwaysOnTop', defaultValue: false) as bool? ??
+          false;
+      if (alwaysOnTop) {
+        await windowManager.setAlwaysOnTop(true);
+      }
       await windowManager.show();
       await windowManager.focus();
     });

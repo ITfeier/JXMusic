@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/constants.dart';
 import 'providers.dart';
 import 'ui/shell_page.dart';
+import 'ui/shortcuts.dart';
 import 'theme.dart';
 
 class JXApp extends ConsumerStatefulWidget {
@@ -33,7 +34,7 @@ class _JXAppState extends ConsumerState<JXApp> {
       theme: buildJXTheme(seedColor, darkMode: false),
       darkTheme: buildJXTheme(seedColor, darkMode: true),
       themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-      home: const ShellPage(),
+      home: const JXKeyboardShortcuts(child: ShellPage()),
       builder: (context, child) {
         // 全局背景渐变 + 液态玻璃氛围
         return AnimatedBuilder(

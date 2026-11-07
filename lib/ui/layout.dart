@@ -17,6 +17,13 @@ String jxFormatDuration(int seconds) {
   return '$m:$s';
 }
 
+/// 播放速度格式化：1.0 -> "1.0x"，1.25 -> "1.25x"
+String jxFormatSpeed(double speed) {
+  final fixed = speed.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '');
+  final trimmed = fixed.endsWith('.') ? '${fixed}0' : fixed;
+  return '${trimmed}x';
+}
+
 /// 歌单封面渐变占位（仿设计稿 c1~c6 多彩渐变）
 List<Color> jxAlbumGradient(int index) {
   const palettes = <List<Color>>[

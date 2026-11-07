@@ -10,7 +10,14 @@ class PlayerService extends ChangeNotifier {
     this.onSongStarted,
     this.urlResolver,
     this.lyricsResolver,
+    this.onSettingChanged,
+    double initialVolume = 80,
+    int initialLoopMode = 2,
+    double initialSpeed = 1.0,
   }) {
+    _volume = initialVolume;
+    _loopMode = initialLoopMode;
+    _speed = initialSpeed;
     _init();
   }
 
@@ -22,6 +29,9 @@ class PlayerService extends ChangeNotifier {
 
   /// 歌词解析器：切歌时自动取歌词
   final Future<List<LyricLine>> Function(Song song)? lyricsResolver;
+
+  /// 音量/循环模式/倍速变化时回调（用于持久化用户偏好）
+  final void Function(String key, dynamic value)? onSettingChanged;
 
   Player? _player;
 
@@ -53,6 +63,15 @@ class PlayerService extends ChangeNotifier {
   double _volume = 80;
   double get volume => _volume;
 
+  // 静音（记住静音前的音量）
+  bool _muted = false;
+  bool get muted => _muted;
+  double _volumeBeforeMute = 80;
+
+  // 播放速度
+  double _speed = 1.0;
+  double get speed => _speed;
+
   // 歌词
   List<LyricLine> _lyrics = [];
   List<LyricLine> get lyrics => _lyrics;
@@ -68,6 +87,9 @@ class PlayerService extends ChangeNotifier {
   Future<void> _init() async {
     _player = Player();
     _player?.setVolume(_volume);
+    if (_speed != 1.0) {
+      _player?.setRate(_speed);
+    }
 
     _posSub = _player?.stream.position.listen((p) {
       _position = p;
@@ -264,12 +286,39 @@ class PlayerService extends ChangeNotifier {
 
   void setLoopMode(int mode) {
     _loopMode = mode;
+    onSettingChanged?.call('loopMode', mode);
     notifyListeners();
   }
 
   Future<void> setVolume(double v) async {
     _volume = v.clamp(0, 100);
-    await _player?.setVolume(_volume);
+    if (_volume > 0) {
+      _muted = false;
+      _volumeBeforeMute = _volume;
+    }
+    await _player?.setVolume(_muted ? 0 : _volume);
+    onSettingChanged?.call('volume', _volume);
+    notifyListeners();
+  }
+
+  /// 静音 / 取消静音（记住静音前的音量）
+  Future<void> toggleMute() async {
+    if (_muted) {
+      _muted = false;
+      _volume = _volumeBeforeMute > 0 ? _volumeBeforeMute : 80;
+    } else {
+      _volumeBeforeMute = _volume;
+      _muted = true;
+    }
+    await _player?.setVolume(_muted ? 0 : _volume);
+    notifyListeners();
+  }
+
+  /// 设置播放速度（0.25x ~ 2.0x）
+  Future<void> setSpeed(double speed) async {
+    _speed = speed.clamp(0.25, 2.0);
+    await _player?.setRate(_speed);
+    onSettingChanged?.call('speed', _speed);
     notifyListeners();
   }
 

@@ -10,6 +10,7 @@ import '../../services/library_store.dart';
 import '../../services/player_service.dart';
 import '../dialogs.dart';
 import '../glass.dart';
+import '../layout.dart';
 
 /// 全屏播放页（液态玻璃 + 旋转封面 + 歌词）
 class PlayerPage extends ConsumerStatefulWidget {
@@ -264,24 +265,47 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                       ],
                     ),
                     const SizedBox(height: 14),
-                    // 音量
+                    // 音量 + 倍速
                     Row(
                       children: [
-                        Icon(Icons.volume_down_rounded,
+                        GestureDetector(
+                          onTap: player.toggleMute,
+                          child: Icon(
+                            player.muted
+                                ? Icons.volume_off_rounded
+                                : Icons.volume_down_rounded,
                             size: 18,
-                            color: textSub),
+                            color: player.muted
+                                ? JXColors.accentPink
+                                : textSub,
+                          ),
+                        ),
                         Expanded(
                           child: Slider(
-                            value: player.volume,
+                            value: player.muted ? 0 : player.volume,
                             max: 100,
                             activeColor: JXColors.primary,
                             inactiveColor: Colors.grey.withValues(alpha: 0.2),
                             onChanged: (v) => player.setVolume(v),
                           ),
                         ),
-                        Icon(Icons.volume_up_rounded,
+                        GestureDetector(
+                          onTap: player.toggleMute,
+                          child: Icon(
+                            player.muted
+                                ? Icons.volume_off_rounded
+                                : Icons.volume_up_rounded,
                             size: 18,
-                            color: textSub),
+                            color: player.muted
+                                ? JXColors.accentPink
+                                : textSub,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        _SpeedButton(
+                          speed: player.speed,
+                          onChanged: player.setSpeed,
+                        ),
                       ],
                     ),
                   ],
@@ -816,6 +840,51 @@ class _DownloadProgressDialog extends StatelessWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 倍速选择按钮
+class _SpeedButton extends StatelessWidget {
+  final double speed;
+  final ValueChanged<double> onChanged;
+
+  const _SpeedButton({required this.speed, required this.onChanged});
+
+  static const List<double> _options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return PopupMenuButton<double>(
+      tooltip: '播放速度',
+      initialValue: speed,
+      onSelected: onChanged,
+      itemBuilder: (_) => [
+        for (final v in _options)
+          PopupMenuItem(value: v, child: Text(jxFormatSpeed(v))),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: (isDark ? JXColors.glassDark : JXColors.glassLight)
+              .withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isDark
+                ? JXColors.glassStrokeDark
+                : JXColors.glassStrokeLight,
+          ),
+        ),
+        child: Text(
+          jxFormatSpeed(speed),
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            color: speed == 1.0 ? null : JXColors.primary,
+          ),
+        ),
       ),
     );
   }
