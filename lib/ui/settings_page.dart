@@ -202,7 +202,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.9.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.9.1 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',

@@ -433,14 +433,12 @@ class QQMusicApi implements MusicPlatformApi {
       final text = resp.data.toString();
       // ptuiCB('0','0','跳转URL','0','登录成功!','昵称')
       // 66=未扫码 67=待确认 65=已过期
-      final m = RegExp(
-              r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)','([^']*)'")
-          .firstMatch(text);
-      if (m == null) {
+      final cb = parsePtuiCb(text);
+      if (cb == null) {
         _lastError = 'QQ 轮询返回异常内容，登录接口可能已变更';
         return null;
       }
-      final code = m.group(1) ?? '';
+      final code = cb.code;
       if (code == '66' || code == '67') {
         _lastError = null; // 等待扫码 / 待确认，属正常状态
         return null;
@@ -450,15 +448,17 @@ class QQMusicApi implements MusicPlatformApi {
         return null;
       }
       if (code == '7') {
-        _lastError = 'QQ 轮询参数校验失败，登录接口可能已变更';
+        _lastError = cb.message.trim().isEmpty
+            ? 'QQ 轮询参数校验失败，登录接口可能已变更'
+            : 'QQ 轮询参数校验失败：${cb.message.trim()}';
         return null;
       }
       if (code != '0') {
         _lastError = 'QQ 登录未完成（code $code）';
         return null;
       }
-      final jumpUrl = m.group(2) ?? '';
-      final ptNick = (m.group(4) ?? '').trim();
+      final jumpUrl = cb.redirectUrl;
+      final ptNick = cb.nickname.trim();
       final uin = RegExp(r'[?&]uin=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
       final sigx =
           RegExp(r'[?&]ptsigx=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
@@ -718,4 +718,48 @@ class QQMusicApi implements MusicPlatformApi {
     return '${hex(8)}-${hex(4)}-4${hex(3)}-'
         '${(8 + r.nextInt(4)).toRadixString(16)}${hex(3)}-${hex(12)}';
   }
+}
+
+/// `ptuiCB(...)` 回调解析结果
+class PtuiCbResult {
+  /// 状态码：0 登录成功、65 已过期、66 未扫码、67 已扫码待确认、7 参数错误
+  final String code;
+
+  /// 登录成功时的跳转 URL（含 uin / ptsigx）
+  final String redirectUrl;
+
+  /// 服务端返回的提示文案（可能为 GBK 乱码，仅用于错误展示）
+  final String message;
+
+  /// 扫码用户的 QQ 昵称
+  final String nickname;
+
+  const PtuiCbResult({
+    required this.code,
+    required this.redirectUrl,
+    required this.message,
+    required this.nickname,
+  });
+}
+
+/// 容错解析 QQ 的 `ptuiCB('code','0','url','0','msg', 'nick')` 响应。
+///
+/// 真实响应格式并不稳定：最后一项前可能带空格（如 `'', '')`）、字段数可能增减、
+/// 文案是 GBK 编码的乱码。因此这里不按固定分组匹配，而是先截取括号内内容，
+/// 再把其中所有单引号字符串按顺序取出，避免把正常的等待态误判为"接口异常"。
+PtuiCbResult? parsePtuiCb(String text) {
+  final body =
+      RegExp(r'ptuiCB\((.*?)\)', dotAll: true).firstMatch(text)?.group(1);
+  if (body == null) return null;
+  final args = <String>[
+    for (final m in RegExp(r"'((?:\\.|[^'\\])*)'").allMatches(body))
+      m.group(1) ?? '',
+  ];
+  if (args.isEmpty) return null;
+  return PtuiCbResult(
+    code: args[0],
+    redirectUrl: args.length > 2 ? args[2] : '',
+    message: args.length > 4 ? args[4] : '',
+    nickname: args.length > 5 ? args[5] : '',
+  );
 }
