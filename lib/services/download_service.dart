@@ -7,16 +7,44 @@ import 'package:path_provider/path_provider.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
 import 'api/http.dart';
+import 'local_music.dart';
+
+/// 一条已下载记录
+class DownloadedEntry {
+  final Song song;
+  final File file;
+  final int bytes;
+  final DateTime modifiedAt;
+
+  const DownloadedEntry({
+    required this.song,
+    required this.file,
+    required this.bytes,
+    required this.modifiedAt,
+  });
+}
 
 /// 下载服务：把歌曲保存到系统下载目录（Windows：下载/JXMusic；
 /// Android：应用外部存储目录下的 JXMusic），并在保存过程中回报进度。
 class DownloadService {
-  DownloadService({this.directoryOverride});
+  DownloadService({this.directoryOverride, LocalMusicService? localMusic})
+      : _localMusic = localMusic ?? LocalMusicService();
 
   static final DownloadService instance = DownloadService();
 
   /// 指定保存目录（测试用；为空时按平台取系统下载目录）
   final Directory? directoryOverride;
+
+  final LocalMusicService _localMusic;
+
+  static const List<String> _audioExtensions = [
+    '.mp3',
+    '.flac',
+    '.wav',
+    '.m4a',
+    '.aac',
+    '.ogg',
+  ];
 
   /// 各平台 CDN 需要对应 Referer 才允许下载
   static Map<String, String> headersFor(int platform) {
@@ -108,5 +136,37 @@ class DownloadService {
       },
     );
     return file.path;
+  }
+
+  /// 列出下载目录里已下载的音频（读取内嵌封面/时长，按修改时间倒序）
+  Future<List<DownloadedEntry>> listDownloaded() async {
+    final dir = await targetDirectory();
+    final entries = <DownloadedEntry>[];
+    for (final entity in dir.listSync()) {
+      if (entity is! File) continue;
+      final ext = p.extension(entity.path).toLowerCase();
+      if (!_audioExtensions.contains(ext)) continue;
+      try {
+        final stat = entity.statSync();
+        final song = await _localMusic.songFromFile(entity);
+        entries.add(DownloadedEntry(
+          song: song,
+          file: entity,
+          bytes: stat.size,
+          modifiedAt: stat.modified,
+        ));
+      } catch (_) {
+        // 单个文件读失败不影响整个列表
+      }
+    }
+    entries.sort((a, b) => b.modifiedAt.compareTo(a.modifiedAt));
+    return entries;
+  }
+
+  /// 删除一个已下载文件
+  Future<void> deleteDownload(DownloadedEntry entry) async {
+    if (entry.file.existsSync()) {
+      await entry.file.delete();
+    }
   }
 }

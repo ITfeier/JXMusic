@@ -1,9 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
 import '../models/song.dart';
 import '../providers.dart';
+import '../services/download_service.dart';
 import '../services/library_store.dart';
 import '../services/playback.dart';
 import 'dialogs.dart';
@@ -11,7 +14,7 @@ import 'glass.dart';
 import 'layout.dart';
 import 'my_playlist_page.dart';
 
-/// 音乐库：收藏 / 播放历史 / 我的歌单
+/// 音乐库：收藏 / 播放历史 / 我的歌单 / 已下载
 class LibraryPage extends ConsumerStatefulWidget {
   const LibraryPage({super.key});
 
@@ -22,6 +25,10 @@ class LibraryPage extends ConsumerStatefulWidget {
 class _LibraryPageState extends ConsumerState<LibraryPage> {
   int _tab = 0;
 
+  List<DownloadedEntry> _downloads = const [];
+  bool _downloadsLoading = false;
+  String? _downloadsError;
+
   Future<void> _playFrom(List<Song> songs, int index) async {
     final ok = await resolveAndPlay(ref, songs[index], queue: songs);
     if (!ok && mounted) {
@@ -29,6 +36,74 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
         content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台'),
       ));
     }
+  }
+
+  void _switchTab(int index) {
+    setState(() => _tab = index);
+    // 下载目录可能在别的页面新增了文件，切到下载页时重新扫描
+    if (index == 3) _loadDownloads();
+  }
+
+  Future<void> _loadDownloads() async {
+    if (_downloadsLoading) return;
+    setState(() {
+      _downloadsLoading = true;
+      _downloadsError = null;
+    });
+    try {
+      final list = await DownloadService.instance.listDownloaded();
+      if (mounted) setState(() => _downloads = list);
+    } catch (e) {
+      if (mounted) setState(() => _downloadsError = '读取下载目录失败：$e');
+    } finally {
+      if (mounted) setState(() => _downloadsLoading = false);
+    }
+  }
+
+  Future<void> _openDownloadFolder() async {
+    try {
+      final dir = await DownloadService.instance.targetDirectory();
+      if (Platform.isWindows) {
+        await Process.run('explorer', [dir.path]);
+      } else if (mounted) {
+        _toast('下载目录：${dir.path}');
+      }
+    } catch (e) {
+      if (mounted) _toast('无法打开下载目录：$e');
+    }
+  }
+
+  Future<void> _revealFile(DownloadedEntry entry) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.run('explorer', ['/select,', entry.file.path]);
+      } else if (mounted) {
+        _toast('文件位置：${entry.file.path}');
+      }
+    } catch (e) {
+      if (mounted) _toast('无法定位文件：$e');
+    }
+  }
+
+  Future<void> _deleteDownload(DownloadedEntry entry) async {
+    final ok = await confirmAction(
+      context,
+      title: '删除已下载文件',
+      content: '确定删除「${entry.song.title}」的本地文件吗？',
+    );
+    if (!ok) return;
+    try {
+      await DownloadService.instance.deleteDownload(entry);
+      await _loadDownloads();
+      if (mounted) _toast('已删除本地文件');
+    } catch (e) {
+      if (mounted) _toast('删除失败：$e');
+    }
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _createPlaylist() async {
@@ -72,29 +147,42 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                   icon: Icons.add_rounded,
                   onPressed: _createPlaylist,
                 ),
+              if (_tab == 3)
+                GlassIconButton(
+                  icon: Icons.refresh_rounded,
+                  size: 36,
+                  onPressed: _loadDownloads,
+                ),
             ],
           ),
         ),
-        Padding(
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
               _TabChip(
                 text: '收藏 ${store.favorites.length}',
                 selected: _tab == 0,
-                onTap: () => setState(() => _tab = 0),
+                onTap: () => _switchTab(0),
               ),
               const SizedBox(width: 8),
               _TabChip(
                 text: '历史 ${store.history.length}',
                 selected: _tab == 1,
-                onTap: () => setState(() => _tab = 1),
+                onTap: () => _switchTab(1),
               ),
               const SizedBox(width: 8),
               _TabChip(
                 text: '歌单 ${store.playlists.length}',
                 selected: _tab == 2,
-                onTap: () => setState(() => _tab = 2),
+                onTap: () => _switchTab(2),
+              ),
+              const SizedBox(width: 8),
+              _TabChip(
+                text: '下载 ${_downloads.length}',
+                selected: _tab == 3,
+                onTap: () => _switchTab(3),
               ),
             ],
           ),
@@ -103,7 +191,8 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           child: switch (_tab) {
             0 => _buildFavorites(store, textSub),
             1 => _buildHistory(store, textSub),
-            _ => _buildPlaylists(store, textSub),
+            2 => _buildPlaylists(store, textSub),
+            _ => _buildDownloads(textSub),
           },
         ),
       ],
@@ -177,6 +266,84 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildDownloads(Color textSub) {
+    if (_downloadsLoading) {
+      return const Center(
+          child: CircularProgressIndicator(color: JXColors.primary));
+    }
+    if (_downloadsError != null) {
+      return _EmptyHint(
+        icon: Icons.error_outline_rounded,
+        text: _downloadsError!,
+        textSub: textSub,
+      );
+    }
+    if (_downloads.isEmpty) {
+      return _EmptyHint(
+        icon: Icons.download_rounded,
+        text: '还没有下载的歌曲\n在播放页「⋯」菜单里可以下载当前歌曲',
+        textSub: textSub,
+      );
+    }
+    final songs = [for (final e in _downloads) e.song];
+    final totalBytes = _downloads.fold<int>(0, (sum, e) => sum + e.bytes);
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 6, 8, 0),
+          child: Row(
+            children: [
+              Text(
+                '${_downloads.length} 首 · ${_formatBytes(totalBytes)}',
+                style: TextStyle(fontSize: 11.5, color: textSub),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _openDownloadFolder,
+                icon: const Icon(Icons.folder_open_rounded, size: 16),
+                label: const Text('打开文件夹', style: TextStyle(fontSize: 12)),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+            itemCount: _downloads.length,
+            separatorBuilder: (_, _) => const SizedBox(height: 8),
+            itemBuilder: (context, i) {
+              final entry = _downloads[i];
+              return SongRow(
+                title: entry.song.title,
+                artist: entry.song.artist,
+                tag: '已下载',
+                tagColor: JXColors.accentCyan,
+                durationText: _formatBytes(entry.bytes),
+                coverUrl: entry.song.coverUrl,
+                gradientIndex: i,
+                onTap: () => _playFrom(songs, i),
+                trailing: PopupMenuButton<String>(
+                  icon: Icon(Icons.more_vert_rounded, size: 18, color: textSub),
+                  onSelected: (action) {
+                    if (action == 'reveal') {
+                      _revealFile(entry);
+                    } else if (action == 'delete') {
+                      _deleteDownload(entry);
+                    }
+                  },
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 'reveal', child: Text('定位文件')),
+                    PopupMenuItem(value: 'delete', child: Text('删除文件')),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -346,6 +513,19 @@ class _EmptyHint extends StatelessWidget {
       ),
     );
   }
+}
+
+String _formatBytes(int bytes) {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+  if (bytes >= 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  if (bytes >= 1024) {
+    return '${(bytes / 1024).toStringAsFixed(0)} KB';
+  }
+  return '$bytes B';
 }
 
 String _formatPlayedAt(DateTime time) {

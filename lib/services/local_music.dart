@@ -80,7 +80,7 @@ class LocalMusicService {
               final ext =
                   p.extension(f.path).toLowerCase().replaceFirst('.', '');
               if (_exts.contains(ext)) {
-                songs.add(await _songFromFile(f));
+                songs.add(await songFromFile(f));
                 onProgress?.call(songs.length);
               }
             }
@@ -91,7 +91,8 @@ class LocalMusicService {
     return songs;
   }
 
-  Future<Song> _songFromFile(File file) async {
+  /// 单个音频文件 -> Song（读取标题/歌手/专辑/时长与内嵌封面）
+  Future<Song> songFromFile(File file) async {
     var title = p.basenameWithoutExtension(file.path);
     var artist = '未知歌手';
     var album = '';
@@ -110,6 +111,15 @@ class LocalMusicService {
       duration = (meta.duration?.inSeconds) ?? 0;
       cover = await _extractCover(meta);
     } catch (_) {}
+    // 没有可用标签时，从「歌手 - 歌名」这种文件名里回退解析
+    if (title == p.basenameWithoutExtension(file.path)) {
+      final sep = title.indexOf(' - ');
+      if (sep > 0) {
+        final nameFromFile = title.substring(sep + 3).trim();
+        artist = title.substring(0, sep).trim();
+        if (nameFromFile.isNotEmpty) title = nameFromFile;
+      }
+    }
     return Song(
       id: 'local_${file.path.hashCode.toRadixString(16)}',
       platform: JXPlatform.local,
