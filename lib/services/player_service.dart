@@ -6,9 +6,22 @@ import '../models/lyric.dart';
 
 /// 播放器服务：基于 media_kit (libmpv)，Windows/Android 双端
 class PlayerService extends ChangeNotifier {
-  PlayerService() {
+  PlayerService({
+    this.onSongStarted,
+    this.urlResolver,
+    this.lyricsResolver,
+  }) {
     _init();
   }
+
+  /// 一首歌真正开始播放时回调（用于记录播放历史）
+  final void Function(Song song)? onSongStarted;
+
+  /// 播放直链解析器：队列里的歌曲可能还没解析过直链，切歌时按需解析
+  final Future<String?> Function(Song song)? urlResolver;
+
+  /// 歌词解析器：切歌时自动取歌词
+  final Future<List<LyricLine>> Function(Song song)? lyricsResolver;
 
   Player? _player;
 
@@ -155,14 +168,29 @@ class PlayerService extends ChangeNotifier {
   Future<void> _playAt(int index) async {
     if (index < 0 || index >= _queue.length) return;
     _currentIndex = index;
-    final song = _queue[index];
-    final url = song.audioUrl;
+    var song = _queue[index];
+
+    // 队列里的歌曲可能只有平台 id、没有直链（例如"播放全部"、自动下一首），
+    // 这里按需解析一次并回写队列，避免后续歌曲卡住播不了。
+    var url = song.audioUrl;
     if (url == null || url.isEmpty) {
-      // 无直链，尝试解析（由上层负责注入 audioUrl）
+      try {
+        url = await urlResolver?.call(song);
+      } catch (e) {
+        debugPrint('[JXMusic] 直链解析失败: $e');
+        url = null;
+      }
+      if (url != null && url.isNotEmpty) {
+        song = song.copyWith(audioUrl: url);
+        _queue[index] = song;
+      }
+    }
+    if (url == null || url.isEmpty) {
       debugPrint('[JXMusic] 歌曲无可播放链接: ${song.title}');
       notifyListeners();
       return;
     }
+
     _lyrics = const [];
     _lyricIndex = -1;
     try {
@@ -176,10 +204,27 @@ class PlayerService extends ChangeNotifier {
         headers = {'Referer': 'https://m.kugou.com/'};
       }
       await _player?.open(Media(url, httpHeaders: headers), play: true);
+      onSongStarted?.call(song);
+      _loadLyrics(song);
     } catch (e) {
       debugPrint('[JXMusic] 播放失败: $e');
     }
     notifyListeners();
+  }
+
+  /// 异步加载歌词；切歌后到达的旧响应会被丢弃
+  void _loadLyrics(Song song) {
+    final resolver = lyricsResolver;
+    if (resolver == null) return;
+    resolver(song).then((lines) {
+      if (currentSong?.globalId != song.globalId) return;
+      _lyrics = lines;
+      _lyricIndex = -1;
+      _updateLyricIndex();
+      notifyListeners();
+    }).catchError((Object e) {
+      debugPrint('[JXMusic] 歌词加载失败: $e');
+    });
   }
 
   Future<void> play() => _player?.play() ?? Future.value();

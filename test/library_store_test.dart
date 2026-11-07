@@ -1,0 +1,158 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
+import 'package:jxmusic/core/constants.dart';
+import 'package:jxmusic/models/song.dart';
+import 'package:jxmusic/services/library_store.dart';
+
+void main() {
+  late Directory tempDir;
+  late Box<Map> historyBox;
+  late Box<Map> playlistsBox;
+  late DateTime clock;
+
+  LibraryStore newStore() => LibraryStore(
+        historyBox: historyBox,
+        playlistsBox: playlistsBox,
+        clock: () => clock,
+      );
+
+  const songA = Song(
+    id: 'a',
+    platform: JXPlatform.netease,
+    title: '晴天',
+    artist: '周杰伦',
+    album: '叶惠美',
+  );
+  const songB = Song(
+    id: 'b',
+    platform: JXPlatform.kugou,
+    title: '国际歌',
+    artist: '群星',
+  );
+
+  setUpAll(() async {
+    tempDir = await Directory.systemTemp.createTemp('jxmusic_lib_test_');
+    Hive.init(tempDir.path);
+    historyBox = await Hive.openBox<Map>('test_history');
+    playlistsBox = await Hive.openBox<Map>('test_playlists');
+  });
+
+  setUp(() async {
+    await historyBox.clear();
+    await playlistsBox.clear();
+    clock = DateTime(2026, 1, 1, 10, 0, 0);
+  });
+
+  tearDownAll(() async {
+    await Hive.close();
+    if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+  });
+
+  test('播放历史：新记录在最前，同一首连播不重复', () {
+    final store = newStore();
+    store.addHistory(songA);
+    clock = clock.add(const Duration(minutes: 1));
+    store.addHistory(songB);
+    expect(store.history.length, 2);
+    expect(store.history.first.song.id, 'b');
+
+    // 再播一遍 A：应当被提到最前而不是新增一条
+    clock = clock.add(const Duration(minutes: 1));
+    store.addHistory(songA);
+    expect(store.history.length, 2);
+    expect(store.history.first.song.id, 'a');
+    expect(historyBox.length, 2);
+  });
+  test('播放历史：上限 maxHistory，超出丢弃最旧', () {
+    final store = newStore();
+    for (var i = 0; i < JXConstants.maxHistory + 5; i++) {
+      clock = clock.add(const Duration(seconds: 1));
+      store.addHistory(Song(
+        id: 'song_$i',
+        platform: JXPlatform.qq,
+        title: '歌曲 $i',
+        artist: '歌手',
+      ));
+    }
+    expect(store.history.length, JXConstants.maxHistory);
+    expect(historyBox.length, JXConstants.maxHistory);
+    expect(store.history.first.song.id,
+        'song_${JXConstants.maxHistory + 4}');
+  });
+
+  test('播放历史：持久化后重载可还原并可删除', () async {
+    final store = newStore();
+    store.addHistory(songA);
+    clock = clock.add(const Duration(minutes: 1));
+    store.addHistory(songB);
+
+    final reloaded = newStore();
+    expect(reloaded.history.length, 2);
+    expect(reloaded.history.first.song.title, '国际歌');
+
+    // 重载后按 entry 删除要能命中 Hive 里的同一条记录
+    reloaded.removeHistory(reloaded.history.first);
+    expect(reloaded.history.length, 1);
+    expect(historyBox.length, 1);
+
+    reloaded.clearHistory();
+    expect(reloaded.history, isEmpty);
+    expect(historyBox.length, 0);
+  });
+
+  test('收藏：切换收藏状态并持久化', () {
+    final store = newStore();
+    expect(store.isFavorite(songA), isFalse);
+    expect(store.toggleFavorite(songA), isTrue);
+    expect(store.isFavorite(songA), isTrue);
+    expect(store.favorites.length, 1);
+    expect(playlistsBox.length, 1);
+
+    final reloaded = newStore();
+    expect(reloaded.isFavorite(songA), isTrue);
+    expect(reloaded.favorites.first.title, '晴天');
+
+    expect(reloaded.toggleFavorite(songA), isFalse);
+    expect(reloaded.favorites, isEmpty);
+    expect(playlistsBox.length, 0);
+  });
+
+  test('自建歌单：创建/加歌去重/移除/重命名/删除', () {
+    final store = newStore();
+    final id = store.createPlaylist('通勤');
+    expect(store.playlists.length, 1);
+    expect(store.playlistById(id)?.name, '通勤');
+
+    expect(store.addSongToPlaylist(id, songA), isTrue);
+    expect(store.addSongToPlaylist(id, songA), isFalse, reason: '重复加歌应被拒绝');
+    expect(store.addSongToPlaylist(id, songB), isTrue);
+    expect(store.playlistById(id)?.songCount, 2);
+
+    store.renamePlaylist(id, '通勤歌单');
+    expect(store.playlistById(id)?.name, '通勤歌单');
+
+    store.removeSongFromPlaylist(id, songA);
+    expect(store.playlistById(id)?.songCount, 1);
+
+    // 持久化后重载
+    final reloaded = newStore();
+    final restored = reloaded.playlistById(id);
+    expect(restored, isNotNull);
+    expect(restored!.name, '通勤歌单');
+    expect(restored.songs.single.id, 'b');
+
+    reloaded.deletePlaylist(id);
+    expect(reloaded.playlists, isEmpty);
+    expect(playlistsBox.length, 0);
+  });
+
+  test('存档损坏时容错，不抛异常', () async {
+    await historyBox.put('h:bad', {'song': '不是 Map', 'playedAt': 123});
+    await playlistsBox.put('f:bad', {'song': 42});
+    final store = newStore();
+    expect(store.history, isEmpty);
+    expect(store.favorites, isEmpty);
+  });
+}

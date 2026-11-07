@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../providers.dart';
 import 'home_page.dart';
+import 'library_page.dart';
 import 'search_page.dart';
 import 'local_page.dart';
 import 'settings_page.dart';
@@ -12,12 +13,18 @@ import 'layout.dart';
 
 /// 主界面壳（双端独立布局）：
 /// - 桌面版：左侧固定玻璃导航栏 + 顶部内容工具条 + 内容区 + 底部迷你播放条
-/// - 手机版：内容区 + 迷你播放条 + 底部玻璃 Tab（首页/搜索/本地/设置）
+/// - 手机版：内容区 + 迷你播放条 + 底部玻璃 Tab（首页/搜索/音乐库/本地/设置）
 class ShellPage extends ConsumerWidget {
   const ShellPage({super.key});
 
-  static const _pageTitles = ['首页', '搜索', '本地音乐', '设置'];
-  static const _pageCrumbs = ['/ 推荐', '/ 聚合搜索', '/ 本地曲库', '/ 偏好'];
+  static const _pageTitles = ['首页', '搜索', '音乐库', '本地音乐', '设置'];
+  static const _pageCrumbs = [
+    '/ 推荐',
+    '/ 聚合搜索',
+    '/ 收藏 · 历史 · 歌单',
+    '/ 本地曲库',
+    '/ 偏好',
+  ];
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -27,6 +34,7 @@ class ShellPage extends ConsumerWidget {
     final pages = const [
       HomePage(),
       SearchPage(),
+      LibraryPage(),
       LocalPage(),
       SettingsPage(),
     ];
@@ -34,6 +42,7 @@ class ShellPage extends ConsumerWidget {
     final navItems = [
       (Icons.home_rounded, '首页'),
       (Icons.search_rounded, '搜索'),
+      (Icons.library_music_rounded, '音乐库'),
       (Icons.folder_rounded, '本地'),
       (Icons.settings_rounded, '设置'),
     ];
@@ -58,7 +67,7 @@ class ShellPage extends ConsumerWidget {
                         title: _pageTitles[index],
                         crumb: _pageCrumbs[index],
                         onSearch: () => switchTab(1),
-                        onAvatar: () => switchTab(3),
+                        onAvatar: () => switchTab(4),
                       ),
                       Expanded(
                         child: Padding(

@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
-import '../models/lyric.dart';
 import '../providers.dart';
+import '../services/playback.dart';
 import 'glass.dart';
 
 /// 聚合搜索页
@@ -49,31 +49,13 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 
   Future<void> _play(Song song) async {
-    final hub = ref.read(musicHubProvider);
-    final api = hub.api(song.platform);
-    if (api == null) return;
-    final url = await api.getPlayUrl(song);
-    final player = ref.read(playerServiceProvider);
-    await player.playSong(Song(
-      id: song.id,
-      platform: song.platform,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      coverUrl: song.coverUrl,
-      audioUrl: url,
-      duration: song.duration,
-      vip: song.vip,
-      loginRequired: url == null,
+    final ok = await resolveAndPlay(ref, song);
+    if (ok || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(song.vip
+          ? '「${song.title}」为 VIP 歌曲，请先登录对应平台后播放'
+          : '获取「${song.title}」播放链接失败，请重试'),
     ));
-    if (url != null) {
-      final lrc = await api.getLyrics(song);
-      if (mounted) {
-        ref
-            .read(playerServiceProvider)
-            .setLyrics(LyricParser.parseLrc(lrc));
-      }
-    }
   }
 
   @override

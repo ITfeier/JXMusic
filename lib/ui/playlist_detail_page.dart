@@ -3,8 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../models/playlist.dart';
 import '../models/song.dart';
-import '../models/lyric.dart';
 import '../providers.dart';
+import '../services/playback.dart';
 import 'glass.dart';
 
 /// 歌单详情页
@@ -49,67 +49,19 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
 
   Future<void> _playAll() async {
     if (_songs.isEmpty) return;
-    final first = _songs.first;
-    final hub = ref.read(musicHubProvider);
-    final api = hub.api(first.platform);
-    if (api == null) return;
-    final url = await api.getPlayUrl(first);
-    final player = ref.read(playerServiceProvider);
-    await player.playSong(
-      Song(
-        id: first.id,
-        platform: first.platform,
-        title: first.title,
-        artist: first.artist,
-        album: first.album,
-        coverUrl: first.coverUrl,
-        audioUrl: url,
-        duration: first.duration,
-        vip: first.vip,
-        loginRequired: url == null,
-      ),
-      queue: [
-        for (final s in _songs)
-          Song(
-            id: s.id,
-            platform: s.platform,
-            title: s.title,
-            artist: s.artist,
-            album: s.album,
-            coverUrl: s.coverUrl,
-            duration: s.duration,
-            vip: s.vip,
-          ),
-      ],
-    );
+    final ok = await resolveAndPlay(ref, _songs.first, queue: _songs);
+    if (!ok && mounted) _toastPlayFailed();
   }
 
   Future<void> _play(Song song) async {
-    final hub = ref.read(musicHubProvider);
-    final api = hub.api(song.platform);
-    if (api == null) return;
-    final url = await api.getPlayUrl(song);
-    final player = ref.read(playerServiceProvider);
-    await player.playSong(Song(
-      id: song.id,
-      platform: song.platform,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      coverUrl: song.coverUrl,
-      audioUrl: url,
-      duration: song.duration,
-      vip: song.vip,
-      loginRequired: url == null,
-    ));
-    if (url != null) {
-      final lrc = await api.getLyrics(song);
-      if (mounted) {
-        ref
-            .read(playerServiceProvider)
-            .setLyrics(LyricParser.parseLrc(lrc));
-      }
-    }
+    final ok = await resolveAndPlay(ref, song, queue: _songs);
+    if (!ok && mounted) _toastPlayFailed();
+  }
+
+  void _toastPlayFailed() {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台')),
+    );
   }
 
   @override

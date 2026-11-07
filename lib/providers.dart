@@ -2,11 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'core/constants.dart';
+import 'models/lyric.dart';
+import 'models/song.dart';
 import 'services/api/http.dart';
 import 'services/api/music_api.dart';
 import 'services/api/netease_api.dart';
 import 'services/api/qq_api.dart';
 import 'services/api/kugou_api.dart';
+import 'services/library_store.dart';
 import 'services/local_music.dart';
 import 'services/player_service.dart';
 
@@ -64,9 +67,46 @@ class AccountNotifier extends StateNotifier<AccountSession?> {
   }
 }
 
-/// 播放器服务（全局单例）
+/// 本地曲库：播放历史 / 收藏 / 自建歌单（Hive 持久化）
+final libraryProvider = ChangeNotifierProvider<LibraryStore>((ref) {
+  final store = LibraryStore();
+  ref.onDispose(store.dispose);
+  return store;
+});
+
+/// 播放器服务（全局单例）。
+/// 这里注入两个 resolver 与播放历史回调：
+/// - 自动下一首/切歌时由 service 自行解析直链，避免队列里后续歌曲无法播放；
+/// - 播放入口统一记录历史、自动加载歌词。
 final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
-  final service = PlayerService();
+  final hub = ref.read(musicHubProvider);
+  final library = ref.read(libraryProvider);
+
+  Future<String?> resolveUrl(Song song) async {
+    final api = hub.api(song.platform);
+    if (api == null) return song.audioUrl;
+    try {
+      return await api.getPlayUrl(song);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<LyricLine>> resolveLyrics(Song song) async {
+    final api = hub.api(song.platform);
+    if (api == null) return const [];
+    try {
+      return LyricParser.parseLrc(await api.getLyrics(song));
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  final service = PlayerService(
+    onSongStarted: library.addHistory,
+    urlResolver: resolveUrl,
+    lyricsResolver: resolveLyrics,
+  );
   ref.onDispose(service.dispose);
   return service;
 });

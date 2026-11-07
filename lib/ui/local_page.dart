@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
 import '../providers.dart';
+import '../services/playback.dart';
 import 'glass.dart';
 
 /// 本地音乐页
@@ -62,8 +63,7 @@ class _LocalPageState extends ConsumerState<LocalPage> {
   }
 
   Future<void> _play(Song song) async {
-    final player = ref.read(playerServiceProvider);
-    await player.playSong(song);
+    await resolveAndPlay(ref, song);
   }
 
   @override

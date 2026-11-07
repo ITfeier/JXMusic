@@ -241,6 +241,7 @@ class SongRow extends StatelessWidget {
   final int gradientIndex;
   final VoidCallback onTap;
   final bool compact;
+  final Widget? trailing;
 
   const SongRow({
     super.key,
@@ -253,6 +254,7 @@ class SongRow extends StatelessWidget {
     required this.gradientIndex,
     required this.onTap,
     this.compact = false,
+    this.trailing,
   });
 
   @override
@@ -321,6 +323,10 @@ class SongRow extends StatelessWidget {
             const SizedBox(width: 10),
             Text(durationText,
                 style: TextStyle(fontSize: 11, color: textSub)),
+            if (trailing != null) ...[
+              const SizedBox(width: 6),
+              trailing!,
+            ],
           ],
         ),
       ),

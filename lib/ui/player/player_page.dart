@@ -6,7 +6,9 @@ import '../../models/song.dart';
 import '../../models/lyric.dart';
 import '../../providers.dart';
 import '../../services/download_service.dart';
+import '../../services/library_store.dart';
 import '../../services/player_service.dart';
+import '../dialogs.dart';
 import '../glass.dart';
 
 /// 全屏播放页（液态玻璃 + 旋转封面 + 歌词）
@@ -292,23 +294,58 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
     );
   }
 
-  /// 更多菜单：播放队列 / 下载当前歌曲
+  /// 更多菜单：播放队列 / 下载 / 收藏 / 添加到歌单
   Future<void> _showMoreSheet() async {
+    final song = ref.read(playerServiceProvider).currentSong;
+    if (song == null) return;
     final picked = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _MoreSheet(),
+      builder: (_) => _MoreSheet(song: song),
     );
     if (!mounted) return;
-    if (picked == 'queue') {
-      await showModalBottomSheet(
-        context: context,
-        backgroundColor: Colors.transparent,
-        builder: (_) => const _QueueSheet(),
-      );
-    } else if (picked == 'download') {
-      await _downloadCurrent();
+    switch (picked) {
+      case 'queue':
+        await showModalBottomSheet(
+          context: context,
+          backgroundColor: Colors.transparent,
+          builder: (_) => const _QueueSheet(),
+        );
+      case 'download':
+        await _downloadCurrent();
+      case 'favorite':
+        _toggleFavorite(song);
+      case 'add_to_playlist':
+        await _addToPlaylist(song);
     }
+  }
+
+  void _toggleFavorite(Song song) {
+    final added = ref.read(libraryProvider).toggleFavorite(song);
+    _toast(added ? '已收藏「${song.title}」' : '已取消收藏');
+  }
+
+  /// 添加到自建歌单：选择已有歌单或新建
+  Future<void> _addToPlaylist(Song song) async {
+    final store = ref.read(libraryProvider);
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _PlaylistPickerSheet(playlists: store.playlists),
+    );
+    if (!mounted || picked == null) return;
+    if (picked == _PlaylistPickerSheet.createNew) {
+      final name = await promptText(context, title: '新建歌单', hint: '歌单名称');
+      if (name == null || !mounted) return;
+      final id = ref.read(libraryProvider).createPlaylist(name);
+      ref.read(libraryProvider).addSongToPlaylist(id, song);
+      _toast('已添加到「$name」');
+      return;
+    }
+    final playlist = ref.read(libraryProvider).playlistById(picked);
+    final added = ref.read(libraryProvider).addSongToPlaylist(picked, song);
+    final name = playlist?.name ?? '';
+    _toast(added ? '已添加到「$name」' : '「$name」里已有这首歌');
   }
 
   /// 下载当前歌曲：先解析播放直链（未解析过时），带进度弹窗写入本地
@@ -593,13 +630,19 @@ class _LyricsViewState extends State<_LyricsView> {
   }
 }
 
-/// 更多菜单弹层（播放队列 / 下载）
-class _MoreSheet extends StatelessWidget {
-  const _MoreSheet();
+/// 更多菜单弹层（播放队列 / 下载 / 收藏 / 添加到歌单）
+class _MoreSheet extends ConsumerWidget {
+  final Song song;
+
+  const _MoreSheet({required this.song});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final sub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+    final favorite = ref.watch(libraryProvider).isFavorite(song);
+
     return SafeArea(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
@@ -621,15 +664,102 @@ class _MoreSheet extends StatelessWidget {
                 title: const Text('下载当前歌曲', style: TextStyle(fontSize: 14)),
                 subtitle: Text(
                   '保存到下载目录下的 JXMusic 文件夹',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: isDark
-                        ? JXColors.textOnDarkSecondary
-                        : JXColors.textSecondary,
-                  ),
+                  style: TextStyle(fontSize: 11, color: sub),
                 ),
                 onTap: () => Navigator.of(context).pop('download'),
               ),
+              ListTile(
+                leading: Icon(
+                  favorite
+                      ? Icons.favorite_rounded
+                      : Icons.favorite_border_rounded,
+                  color: JXColors.accentPink,
+                ),
+                title: Text(
+                  favorite ? '取消收藏' : '收藏歌曲',
+                  style: const TextStyle(fontSize: 14),
+                ),
+                onTap: () => Navigator.of(context).pop('favorite'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.playlist_add_rounded,
+                    color: JXColors.primary),
+                title: const Text('添加到歌单', style: TextStyle(fontSize: 14)),
+                onTap: () => Navigator.of(context).pop('add_to_playlist'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 选择目标歌单（底部弹层）
+class _PlaylistPickerSheet extends StatelessWidget {
+  static const String createNew = '__new__';
+
+  final List<UserPlaylist> playlists;
+
+  const _PlaylistPickerSheet({required this.playlists});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final sub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: GlassCard(
+          borderRadius: BorderRadius.circular(24),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 6),
+                child: Text('添加到歌单',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              ),
+              ListTile(
+                leading: const Icon(Icons.add_rounded, color: JXColors.primary),
+                title: const Text('新建歌单', style: TextStyle(fontSize: 14)),
+                onTap: () => Navigator.of(context).pop(createNew),
+              ),
+              if (playlists.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                  child: Text(
+                    '还没有自建歌单，先新建一个吧',
+                    style: TextStyle(fontSize: 12, color: sub),
+                  ),
+                )
+              else
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final p in playlists)
+                        ListTile(
+                          leading: const Icon(Icons.queue_music_rounded,
+                              color: JXColors.primary),
+                          title: Text(
+                            p.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 14),
+                          ),
+                          subtitle: Text(
+                            '${p.songCount} 首',
+                            style: TextStyle(fontSize: 11, color: sub),
+                          ),
+                          onTap: () => Navigator.of(context).pop(p.id),
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),

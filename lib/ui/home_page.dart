@@ -3,8 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
 import '../models/playlist.dart';
-import '../models/lyric.dart';
 import '../providers.dart';
+import '../services/playback.dart';
 import 'glass.dart';
 import 'playlist_detail_page.dart';
 import 'layout.dart';
@@ -379,38 +379,13 @@ class _HomePageState extends ConsumerState<HomePage> {
   }
 
   Future<void> _resolveAndPlay(Song song) async {
-    final hub = ref.read(musicHubProvider);
-    final api = hub.api(song.platform);
-    if (api == null) return;
-    final url = await api.getPlayUrl(song);
-    if (url == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(song.vip
-              ? '「${song.title}」为 VIP 歌曲，请先登录对应平台后播放'
-              : '获取「${song.title}」播放链接失败，请重试'),
-        ));
-      }
-      return;
-    }
-    final player = ref.read(playerServiceProvider);
-    await player.playSong(Song(
-      id: song.id,
-      platform: song.platform,
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      coverUrl: song.coverUrl,
-      audioUrl: url,
-      duration: song.duration,
-      vip: song.vip,
-      loginRequired: false,
+    final ok = await resolveAndPlay(ref, song);
+    if (ok || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(song.vip
+          ? '「${song.title}」为 VIP 歌曲，请先登录对应平台后播放'
+          : '获取「${song.title}」播放链接失败，请重试'),
     ));
-    // 尝试加载歌词
-    final lrc = await api.getLyrics(song);
-    if (mounted) {
-      ref.read(playerServiceProvider).setLyrics(parseLrc(lrc));
-    }
   }
 }
 
@@ -592,9 +567,6 @@ class _RankCard extends StatelessWidget {
     );
   }
 }
-
-// 复用歌词解析（避免与 models 冲突的简写）
-List<LyricLine> parseLrc(String lrc) => LyricParser.parseLrc(lrc);
 
 /// 歌单卡片上的平台短名
 String _platformShort(int platform) {
