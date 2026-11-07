@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers.dart';
 import '../../core/constants.dart';
+import '../../services/mini_mode.dart';
 import '../glass.dart';
 import 'player_page.dart';
 
@@ -152,6 +153,17 @@ class PlayerBar extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
+              if (MiniMode.supported) ...[
+                GlassIconButton(
+                  icon: Icons.picture_in_picture_alt_rounded,
+                  size: 32,
+                  onPressed: () async {
+                    await MiniMode.enter();
+                    ref.read(miniModeProvider.notifier).state = true;
+                  },
+                ),
+                const SizedBox(width: 4),
+              ],
               GlassIconButton(
                 icon: player.playing
                     ? Icons.pause_rounded

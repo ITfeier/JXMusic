@@ -12,6 +12,7 @@ import '../services/api/http.dart';
 import '../services/api/kugou_api.dart';
 import '../services/api/music_api.dart';
 import '../services/api/qq_api.dart';
+import '../services/tray_service.dart';
 import 'glass.dart';
 
 /// 设置页：主题 / 账号 / 同步 / 关于
@@ -128,6 +129,17 @@ class SettingsPage extends ConsumerWidget {
                         TextStyle(fontSize: 11, height: 1.6, color: textSub),
                   ),
                 ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: Icon(Icons.logout_rounded, size: 22, color: textSub),
+                  title: const Text('退出应用', style: TextStyle(fontSize: 14)),
+                  subtitle: Text(
+                    '关闭主窗口时应用会收进系统托盘，退出请用这里或托盘菜单',
+                    style: TextStyle(fontSize: 11, color: textSub),
+                  ),
+                  trailing: Icon(Icons.chevron_right_rounded, color: textSub),
+                  onTap: () => TrayService.instance.exitApp(),
+                ),
               ],
             ),
           ),
@@ -190,7 +202,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.6.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.7.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',

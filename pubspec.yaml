@@ -1,7 +1,7 @@
 name: jxmusic
 description: "JXMusic - 聚合音乐播放器（QQ音乐/网易云/酷狗/本地音乐）"
 publish_to: 'none'
-version: 0.6.0+6
+version: 0.7.0+7
 
 environment:
   sdk: ^3.13.7
@@ -36,6 +36,7 @@ dependencies:
   pointycastle: ^3.9.1
   # 二维码（扫码登录本地渲染）
   qr_flutter: ^4.1.0
+  tray_manager: ^0.8.3
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -43,3 +44,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/tray_icon.ico

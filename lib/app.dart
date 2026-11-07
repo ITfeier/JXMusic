@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/constants.dart';
 import 'providers.dart';
+import 'services/mini_mode.dart';
+import 'services/tray_service.dart';
+import 'ui/mini_player_page.dart';
 import 'ui/shell_page.dart';
 import 'ui/shortcuts.dart';
 import 'theme.dart';
@@ -17,9 +20,13 @@ class _JXAppState extends ConsumerState<JXApp> {
   @override
   void initState() {
     super.initState();
-    // 预加载播放器服务
-    Future.microtask(() {
-      if (mounted) ref.read(playerServiceProvider);
+    // 预加载播放器服务，并初始化系统托盘（不支持的平台会直接跳过）
+    Future.microtask(() async {
+      if (!mounted) return;
+      final player = ref.read(playerServiceProvider);
+      if (MiniMode.supported) {
+        await TrayService.instance.init(player);
+      }
     });
   }
 
@@ -27,6 +34,7 @@ class _JXAppState extends ConsumerState<JXApp> {
   Widget build(BuildContext context) {
     final dark = ref.watch(darkModeProvider);
     final seedColor = ref.watch(themeColorProvider);
+    final miniMode = ref.watch(miniModeProvider);
 
     return MaterialApp(
       title: JXConstants.appName,
@@ -34,7 +42,9 @@ class _JXAppState extends ConsumerState<JXApp> {
       theme: buildJXTheme(seedColor, darkMode: false),
       darkTheme: buildJXTheme(seedColor, darkMode: true),
       themeMode: dark ? ThemeMode.dark : ThemeMode.light,
-      home: const JXKeyboardShortcuts(child: ShellPage()),
+      home: JXKeyboardShortcuts(
+        child: miniMode ? const MiniPlayerPage() : const ShellPage(),
+      ),
       builder: (context, child) {
         // 全局背景渐变 + 液态玻璃氛围
         return AnimatedBuilder(

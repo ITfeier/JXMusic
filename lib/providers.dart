@@ -166,3 +166,6 @@ final alwaysOnTopProvider = StateProvider<bool>((ref) {
 
 /// 当前页面索引（导航）
 final navIndexProvider = StateProvider<int>((ref) => 0);
+
+/// 迷你播放窗口模式（桌面端）
+final miniModeProvider = StateProvider<bool>((ref) => false);
