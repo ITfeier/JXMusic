@@ -585,12 +585,13 @@ class QQMusicApi implements MusicPlatformApi {
   Future<Map<String, dynamic>?> _exchangeLogin(
       String uin, String ptsigx) async {
     try {
-      // 1) check_sig：302 响应上带 p_skey（同响应还带 skey/uin 等，全部合并备用）
+      // 1) check_sig：p_skey 可能出现在首个 302 响应，也可能在后续跳转才下发，
+      //    因此手动跟随最多 3 跳并逐跳合并 Set-Cookie（Dio 自动跟随会丢中间 Set-Cookie）。
       final ptCookies = <String, String>{};
       var gotPskey = false;
       for (final base in _checkSigCandidates) {
         try {
-          final resp = await JXHttp.dio.get(base,
+          var resp = await JXHttp.dio.get(base,
               queryParameters: _checkSigParams(uin, ptsigx),
               options: Options(
                 followRedirects: false,
@@ -598,12 +599,40 @@ class QQMusicApi implements MusicPlatformApi {
                 headers: {'Referer': 'https://xui.ptlogin2.qq.com/'},
               ));
           _collectSetCookies(resp.headers, ptCookies);
+
+          var hops = 0;
+          while ((ptCookies['p_skey'] ?? '').isEmpty && hops < 3) {
+            final rawLocation = _headerValue(resp.headers, 'location');
+            if (rawLocation.isEmpty) break;
+            if (resp.statusCode != 301 &&
+                resp.statusCode != 302 &&
+                resp.statusCode != 303 &&
+                resp.statusCode != 307) {
+              break;
+            }
+            hops++;
+            final target = rawLocation.startsWith('http')
+                ? rawLocation
+                : Uri.parse(base).resolve(rawLocation).toString();
+            resp = await JXHttp.dio.get(target,
+                options: Options(
+                  followRedirects: false,
+                  validateStatus: (s) => s != null && s < 500,
+                  headers: {
+                    'Referer': base,
+                    if (ptCookies.isNotEmpty) 'Cookie': _cookieStr(ptCookies),
+                  },
+                ));
+            _collectSetCookies(resp.headers, ptCookies);
+          }
+
           if ((ptCookies['p_skey'] ?? '').isNotEmpty) {
             gotPskey = true;
             break;
           }
           _lastError = 'check_sig 无 p_skey（HTTP ${resp.statusCode}，'
-              'Location=${_headerValue(resp.headers, 'location')}，$base）';
+              'Location=${_headerValue(resp.headers, 'location')}，'
+              '已跳转 $hops 次，$base）';
         } catch (e) {
           _lastError = _describeError(e, 'check_sig 请求失败（$base）');
         }

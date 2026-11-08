@@ -6,6 +6,41 @@ import 'music_api.dart';
 import 'http.dart';
 import 'netease_crypto.dart';
 
+/// 网易云搜索结果 -> Song（兼容 `/api/search/get/web` 与 weapi cloudsearch 两种字段）
+///
+/// 公开接口字段：`artists[]`、`album{}`、`duration(ms)`、`fee`；
+/// weapi 字段：`ar[]`、`al{}`、`dt(ms)`、`fee`。
+/// fee：0 免费、1 VIP、4 付费专辑、8 非会员可试听低音质。
+Song? neteaseSongFromSearchJson(Object? raw) {
+  if (raw is! Map) return null;
+  try {
+    final m = Map<String, dynamic>.from(raw);
+    final artists = (m['ar'] as List? ?? m['artists'] as List? ?? [])
+        .whereType<Map>()
+        .map((a) => a['name'] as String? ?? '')
+        .where((s) => s.isNotEmpty)
+        .join('、');
+    final album = (m['al'] as Map?) ?? (m['album'] as Map?);
+    final fee = (m['fee'] as num?)?.toInt() ?? 0;
+    final durationMs = (m['dt'] as num?)?.toInt() ??
+        (m['duration'] as num?)?.toInt() ??
+        0;
+    return Song(
+      id: '${m['id'] ?? ''}',
+      platform: 1,
+      title: m['name'] as String? ?? '',
+      artist: artists.isEmpty ? '未知歌手' : artists,
+      album: album?['name'] as String? ?? '',
+      coverUrl: jxNormalizeImageUrl(
+          (album?['picUrl'] ?? album?['blurPicUrl']) as String?),
+      duration: durationMs ~/ 1000,
+      vip: fee == 1 || fee == 4,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 /// 网易云音乐接口（基于公开逆向 webapi）
 class NeteaseApi implements MusicPlatformApi {
   @override
@@ -26,36 +61,44 @@ class NeteaseApi implements MusicPlatformApi {
   Future<List<Song>> searchSongs(String keyword,
       {int page = 1, int size = 30}) async {
     final offset = (page - 1) * size;
-    final data = {
-      's': keyword,
-      'type': 1,
-      'limit': size,
-      'offset': offset,
-      'total': true,
-    };
+    // 优先用当前可用的公开搜索接口（2026-11 实测 /api/cloudsearch/pc/search/get 已 404）；
+    // 失败时再退回 weapi 版本（若官方恢复可用）。
     try {
+      final resp = await JXHttp.dio.get(
+        '$_musicBase/api/search/get/web',
+        queryParameters: {
+          's': keyword,
+          'type': 1,
+          'limit': size,
+          'offset': offset,
+          'total': 'true',
+        },
+      );
+      final data = resp.data;
+      final result = data is Map ? data['result'] : null;
+      final songs = (result is Map ? result['songs'] as List? : null) ?? const [];
+      final list = songs
+          .map<Song?>((s) => neteaseSongFromSearchJson(s))
+          .whereType<Song>()
+          .toList();
+      if (list.isNotEmpty) return list;
+    } catch (_) {}
+
+    try {
+      final data = {
+        's': keyword,
+        'type': 1,
+        'limit': size,
+        'offset': offset,
+        'total': true,
+      };
       final resp = await _weapi('/api/cloudsearch/pc/search/get', data);
       final result = resp['result'] as Map<String, dynamic>?;
       final songs = (result?['songs'] as List?) ?? const [];
-      return songs.map<Song>((s) {
-        final m = s as Map<String, dynamic>;
-        final artists = (m['ar'] as List? ?? m['artists'] as List? ?? [])
-            .map((a) => (a as Map)['name'] as String? ?? '')
-            .join('、');
-        final album = m['al'] as Map<String, dynamic>? ??
-            m['album'] as Map<String, dynamic>?;
-        final fee = m['fee'] as int? ?? 0;
-        return Song(
-          id: '${m['id']}',
-          platform: platform,
-          title: m['name'] as String? ?? '',
-          artist: artists,
-          album: album?['name'] as String? ?? '',
-          coverUrl: _cover(album?['picUrl'] as String?),
-          duration: (m['dt'] as int? ?? 0) ~/ 1000,
-          vip: fee == 1 || fee == 4,
-        );
-      }).toList();
+      return songs
+          .map<Song?>((s) => neteaseSongFromSearchJson(s))
+          .whereType<Song>()
+          .toList();
     } catch (e) {
       return const [];
     }
@@ -65,11 +108,32 @@ class NeteaseApi implements MusicPlatformApi {
 
   @override
   Future<String?> getPlayUrl(Song song) async {
+    final sid = int.tryParse(song.id);
+    if (sid == null) return null;
+
+    // 1) 公开 GET 接口：不需要 weapi 加密，免费/低价歌曲可直接拿直链
+    //    （2026-11 实测：fee=0/8 返回 200 + url；VIP fee=1 返回 code=-110 需登录）
+    for (final br in const [128000, 320000]) {
+      try {
+        final resp = await JXHttp.dio.get(
+          '$_base/song/enhance/player/url',
+          queryParameters: {'ids': '[$sid]', 'br': br},
+        );
+        final data = resp.data;
+        final list = data is Map ? data['data'] as List? : null;
+        if (list == null || list.isEmpty) continue;
+        final first = list.first;
+        if (first is! Map) continue;
+        final url = first['url'] as String?;
+        if (url != null && url.isNotEmpty) return url;
+      } catch (_) {}
+    }
+
+    // 2) weapi 兜底（老接口，登录后更可能返回高音质）
     try {
-      final sid = int.parse(song.id);
       final data = {
         'ids': jsonEncode([sid]),
-        'level': 'standard', // standard/higher/exhigh/lossless/hires
+        'level': 'standard',
         'encodeType': 'aac',
       };
       final resp = await _weapi('/api/song/enhance/player/url/v1', data);
@@ -86,6 +150,21 @@ class NeteaseApi implements MusicPlatformApi {
 
   @override
   Future<String> getLyrics(Song song) async {
+    // 1) 公开 GET 接口（2026-11 实测可用）
+    try {
+      final resp = await JXHttp.dio.get('$_base/song/lyric', queryParameters: {
+        'id': song.id,
+        'lv': -1,
+        'kv': -1,
+        'tv': -1,
+      });
+      final data = resp.data;
+      final lrc = data is Map ? data['lrc'] : null;
+      final text = (lrc is Map ? lrc['lyric'] as String? : null) ?? '';
+      if (text.isNotEmpty) return text;
+    } catch (_) {}
+
+    // 2) weapi 兜底
     try {
       final data = {'id': song.id, 'lv': -1, 'tv': -1, 'rv': -1};
       final resp = await _weapi('/api/song/lyric/v1', data);
