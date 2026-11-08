@@ -69,8 +69,10 @@ class QQMusicApi implements MusicPlatformApi {
   static const String _appid = '716027609'; // QQ音乐 Web 应用
   static const String _daid = '383';
   static const String _pt3rdAid = '100497308';
-  /// 扫码确认后「check_sig + authorize + QQLogin」整条兑换链的总超时
-  static const Duration _exchangeTimeout = Duration(seconds: 20);
+  /// 扫码确认后「check_sig + authorize + QQLogin」整条兑换链的总超时。
+  /// check_sig 现在最多尝试 3 种请求形态（参考实现 / 带 qrsig / 服务端 URL），
+  /// 每次 10s 网络超时，故总预算从 20s 放宽到 30s。
+  static const Duration _exchangeTimeout = Duration(seconds: 30);
 
   final Map<String, String> _ptCookies = {}; // ssl.ptlogin2 域（qrsig）
   final Map<String, String> _loginCookies = {}; // y.qq.com 域（uin/musickey）
@@ -129,6 +131,56 @@ class QQMusicApi implements MusicPlatformApi {
     final r = Random();
     return List.generate(12, (_) => r.nextInt(10)).join();
   }
+
+  // ---- 扫码链路诊断日志（2026-11 实扫排查用）----
+  // 日志走 print：Android 上 `adb logcat -s flutter` 可见；不引入 Flutter 依赖，
+  // 保证 `dart run tool/check_qq_qr.dart` 仍能执行。日志里不输出完整 cookie/token。
+  void _log(String message) {
+    // ignore: avoid_print
+    print('[JXMusic][QQ登录] $message');
+  }
+
+  /// 打码：只保留前 [head] 后 [tail] 个字符；短值只输出长度
+  static String _mask(String? value, {int head = 4, int tail = 4}) {
+    if (value == null || value.isEmpty) return '(空)';
+    if (value.length <= head + tail) return 'len=${value.length}';
+    return '${value.substring(0, head)}…${value.substring(value.length - tail)}'
+        '(len=${value.length})';
+  }
+
+  static String _short(Object? value, [int max = 160]) {
+    final s = '${value ?? ''}';
+    return s.length <= max ? s : '${s.substring(0, max)}…(len=${s.length})';
+  }
+
+  /// URL 参数名保留、参数值打码后输出（用于观察 ptuiCB 跳转 URL 结构而不泄露 uin/ptsigx）
+  static String _maskUrl(String? url) {
+    if (url == null || url.isEmpty) return '(空)';
+    final uri = Uri.tryParse(url);
+    if (uri == null) return '(不可解析)';
+    final parts = <String>[];
+    uri.queryParametersAll.forEach((k, vals) {
+      parts.add('$k=${vals.isEmpty ? '' : _mask(vals.first)}');
+    });
+    return '${uri.host}${uri.path}?${parts.join('&')}';
+  }
+
+  /// 无重定向 GET：check_sig / authorize 的 p_skey / code 在 302 的响应头里，
+  /// 必须关掉自动跟随才能逐跳收集 Set-Cookie（Dio 自动跟随会丢中间 Set-Cookie）。
+  Future<Response<dynamic>> _getRaw(String url,
+      {Map<String, dynamic>? query, Map<String, String>? headers}) {
+    return JXHttp.dio.get(url,
+        queryParameters: query,
+        options: Options(
+          followRedirects: false,
+          validateStatus: (s) => s != null && s < 500,
+          receiveTimeout: const Duration(seconds: 10),
+          headers: {'Referer': 'https://xui.ptlogin2.qq.com/', ...?headers},
+        ));
+  }
+
+  static bool _isRedirect(int status) =>
+      status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 
   @override
   Future<List<Song>> searchSongs(String keyword,
@@ -269,22 +321,34 @@ class QQMusicApi implements MusicPlatformApi {
     }
   }
 
+  /// 构造「歌单广场」请求 URI（单独抽出便于单测）。
+  ///
+  /// **不要删掉 inCharset/outCharset=utf-8**：该接口默认按 GB2312/GBK 返回
+  /// （响应头 `Content-Type: application/x-javascript;charset=gb2312`），
+  /// Dio 按 UTF-8 解码会把中文歌单标题解成 `�` 替换字符（0.9.7 首页乱码）。
+  /// 显式要求 UTF-8 后服务端改回 `charset=utf-8`，中文正常（2026-11 实测）。
+  static Uri dissByTagUri({required int page, required int size, int? rnd}) {
+    final start = (page - 1) * size;
+    return Uri.parse(_dissByTag).replace(queryParameters: {
+      'categoryId': '10000000',
+      'sortId': '5',
+      'sin': '$start',
+      'ein': '${start + size - 1}',
+      'format': 'json',
+      'rnd': '${rnd ?? DateTime.now().millisecondsSinceEpoch}',
+      'inCharset': 'utf-8',
+      'outCharset': 'utf-8',
+    });
+  }
+
   @override
   Future<List<Playlist>> recommendPlaylists(
       {int page = 1, int size = 20}) async {
     // 歌单广场（按最热排序）：categoryId=10000000 全部、sortId=5 最热。
-    // 2026-11 实测公开可用，无需登录。
+    // 2026-11 实测公开可用，无需登录。参数与 GBK 乱码修复见 [dissByTagUri]。
     try {
-      final start = (page - 1) * size;
-      final resp = await JXHttp.dio.get(_dissByTag,
-          queryParameters: {
-            'categoryId': 10000000,
-            'sortId': 5,
-            'sin': start,
-            'ein': start + size - 1,
-            'format': 'json',
-            'rnd': DateTime.now().millisecondsSinceEpoch,
-          },
+      final resp = await JXHttp.dio.getUri(
+          dissByTagUri(page: page, size: size),
           options: Options(headers: {'Referer': 'https://y.qq.com/'}));
       final raw = resp.data;
       final dataMap = raw is Map ? raw['data'] : null;
@@ -416,15 +480,20 @@ class QQMusicApi implements MusicPlatformApi {
       final qrsig = _ptCookies['qrsig'] ?? '';
       final bytes =
           resp.data is List<int> ? resp.data as List<int> : const <int>[];
+      _log('取码 HTTP=${resp.statusCode} qrsig=${_mask(qrsig)} '
+          'PNG=${bytes.length}字节 '
+          'set-cookie=[${_ptCookies.keys.join(',')}]');
       // 真二维码判据：PNG 魔数 + 111x111（压缩后仅约 400~500 字节，但不能按字节数判断）
       if (qrsig.length <= 40 || !_isQrPng(bytes)) {
         _lastError = 'QQ 取码返回异常图片（可能被网关风控），请更换网络后重试';
+        _log(_lastError!);
         return (qrUrl: '', key: '');
       }
       _qrsig = qrsig;
       return (qrUrl: 'data:image/png;base64,${base64Encode(bytes)}', key: qrsig);
     } catch (e) {
       _lastError = _describeError(e, 'QQ 二维码获取失败');
+      _log('取码异常：$_lastError');
       return (qrUrl: '', key: '');
     }
   }
@@ -488,44 +557,64 @@ class QQMusicApi implements MusicPlatformApi {
       // 66=未扫码 67=待确认 65=已过期
       final cb = parsePtuiCb(text);
       if (cb == null) {
+        _log('轮询响应无法解析：${_short(text)}');
         _lastError = 'QQ 轮询返回异常内容，登录接口可能已变更';
         return null;
       }
       final code = cb.code;
       if (code == '66' || code == '67') {
+        _log('轮询 code=$code（等待扫码/待确认）');
         _lastError = null; // 等待扫码 / 待确认，属正常状态
         return null;
       }
       if (code == '65') {
+        _log('轮询 code=65（二维码已过期）');
         _lastError = '二维码已过期，请关闭后重新获取';
         return null;
       }
       if (code == '7') {
+        _log('轮询 code=7 msg=${_short(cb.message)}');
         _lastError = cb.message.trim().isEmpty
             ? 'QQ 轮询参数校验失败，登录接口可能已变更'
             : 'QQ 轮询参数校验失败：${cb.message.trim()}';
         return null;
       }
       if (code != '0') {
+        _log('轮询 code=$code msg=${_short(cb.message)}');
         _lastError = 'QQ 登录未完成（code $code）';
         return null;
       }
-      final jumpUrl = cb.redirectUrl;
+      // 服务端返回的跳转 URL 里已带 uin/ptsigx 及签名参数；HTML 转义（&amp;）需还原
+      final jumpUrl = cb.redirectUrl.replaceAll('&amp;', '&');
       final ptNick = cb.nickname.trim();
-      final uin = RegExp(r'[?&]uin=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
-      final sigx =
-          RegExp(r'[?&]ptsigx=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
-      if (uin.isEmpty || sigx.isEmpty) {
-        _lastError = 'QQ 登录跳转参数解析失败（接口可能已变更）';
+      final parsedJump = Uri.tryParse(jumpUrl);
+      var uin = parsedJump?.queryParameters['uin'] ?? '';
+      var sigx = parsedJump?.queryParameters['ptsigx'] ?? '';
+      if (uin.isEmpty) {
+        uin = RegExp(r'[?&]uin=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
+      }
+      if (sigx.isEmpty) {
+        sigx = RegExp(r'[?&]ptsigx=([^&]+)').firstMatch(jumpUrl)?.group(1) ?? '';
+      }
+      _log('轮询 code=0 扫码确认；跳转URL=${_maskUrl(jumpUrl)} '
+          'uin=${_mask(uin)} ptsigx=${_mask(sigx)} '
+          '昵称=${ptNick.isEmpty ? '(空)' : ptNick}');
+      if (sigx.isEmpty) {
+        _lastError = 'QQ 登录跳转参数解析失败：缺少 ptsigx（接口可能已变更）';
         return null;
+      }
+      if (uin.isEmpty) {
+        // 第三方应用可能隐藏 QQ 号，此时仍可用服务端 URL 里的其它参数尝试 check_sig
+        _log('警告：跳转 URL 未携带 uin，继续用服务端 URL 尝试 check_sig');
       }
 
       _lastError = null;
-      final data = await _exchangeLogin(uin, sigx).timeout(
+      final data = await _exchangeLogin(uin, sigx, jumpUrl).timeout(
         _exchangeTimeout,
         onTimeout: () {
           _lastError =
               'QQ 扫码已确认，但兑换登录态超时（>${_exchangeTimeout.inSeconds} 秒）';
+          _log(_lastError!);
           return null;
         },
       );
@@ -541,6 +630,7 @@ class QQMusicApi implements MusicPlatformApi {
       final musickey = '${data['musickey'] ?? ''}';
       if (musicid.isEmpty || musicid == '0' || musickey.isEmpty) {
         _lastError = 'QQ 登录凭证不完整（缺少 musicid/musickey）';
+        _log('登录凭证不完整：musicid=${_mask(musicid)} musickey=${_mask(musickey)}');
         return null;
       }
 
@@ -556,6 +646,9 @@ class QQMusicApi implements MusicPlatformApi {
         ..['qqmusic_key'] = musickey;
       _guid = _randomGuid;
       _lastError = null;
+      _log('登录成功：昵称=$nick musicid=${_mask(musicid)} '
+          'musickey=${_mask(musickey)} '
+          '写入 cookie=[${_loginCookies.keys.join(',')}]');
       return AccountSession(
         platform: platform,
         cookies: Map.of(_loginCookies),
@@ -563,6 +656,7 @@ class QQMusicApi implements MusicPlatformApi {
       );
     } catch (e) {
       _lastError = _describeError(e, 'QQ 扫码轮询失败');
+      _log('轮询异常：$_lastError');
       return null;
     }
   }
@@ -627,77 +721,156 @@ class QQMusicApi implements MusicPlatformApi {
         },
       };
 
+  /// 单次 check_sig 尝试：GET（不自动跟随）→ 合并 Set-Cookie → 无 p_skey 时
+  /// 手动跟随 302 链（最多 4 跳）继续合并。返回可读的尝试摘要（供 lastError 展示）。
+  /// Dio 自动跟随会丢中间响应的 Set-Cookie，而 p_skey 往往就在 302 上。
+  Future<String> _attemptCheckSig({
+    required String url,
+    Map<String, dynamic>? query,
+    required Map<String, String> jar,
+    required String tag,
+    bool sendJar = true,
+  }) async {
+    final summary = <String>[];
+    var current = await _getRaw(url,
+        query: query,
+        headers: {if (sendJar && jar.isNotEmpty) 'Cookie': _cookieStr(jar)});
+    var status = current.statusCode ?? 0;
+    var location = _headerValue(current.headers, 'location');
+    _collectSetCookies(current.headers, jar);
+    var hasPskey = (jar['p_skey'] ?? '').isNotEmpty;
+    _log('$tag → HTTP $status location=${_short(location)} '
+        'set-cookie=[${jar.keys.join(',')}] p_skey=$hasPskey');
+    summary.add('$tag HTTP$status'
+        '${location.isEmpty ? '' : '→${_maskUrl(location)}'}'
+        '${hasPskey ? ' 已拿到p_skey' : ' 无p_skey'}');
+    if (hasPskey) return summary.join('；');
+
+    for (var hop = 1; hop <= 4; hop++) {
+      if (!_isRedirect(status) || location.isEmpty) break;
+      final referer = current.requestOptions.uri.toString();
+      final target = location.startsWith('http')
+          ? location
+          : Uri.parse(referer).resolve(location).toString();
+      _log('$tag 跳转#$hop → ${_maskUrl(target)}');
+      current = await _getRaw(target,
+          headers: {
+            'Referer': referer,
+            if (jar.isNotEmpty) 'Cookie': _cookieStr(jar),
+          });
+      status = current.statusCode ?? 0;
+      location = _headerValue(current.headers, 'location');
+      _collectSetCookies(current.headers, jar);
+      hasPskey = (jar['p_skey'] ?? '').isNotEmpty;
+      _log('$tag 跳转#$hop 结果 HTTP $status location=${_short(location)} '
+          'set-cookie=[${jar.keys.join(',')}] p_skey=$hasPskey');
+      summary.add('$tag 跳转#$hop HTTP$status'
+          '${location.isEmpty ? '' : '→${_maskUrl(location)}'}'
+          '${hasPskey ? ' 已拿到p_skey' : ' 无p_skey'}');
+      if (hasPskey) break;
+    }
+    return summary.join('；');
+  }
+
   /// 扫码确认后换登录态：check_sig 取 p_skey → oauth2/authorize 取 code →
   /// QQLogin 取 musicid/musickey。
   ///
-  /// 加固点：
-  /// - check_sig / authorize / QQLogin 均走候选列表，主接口失败自动切下一个；
-  /// - Set-Cookie 多值合并、Location 大小写兼容；
-  /// - authorize 先 POST 表单，405/400 时降级 GET（同参数拼 query）；
-  /// - 每步失败写 `_lastError`（具体到某一步/状态码/code 值），异常不外抛。
+  /// 2026-11 真机实扫首轮失败（"check_sig 无 p_skey"）后的加固与取证：
+  /// - 参考实现（L-1124/QQMusicApi `_authorize_qq_qr`）是**不带 Cookie** 请求
+  ///   `ssl.ptlogin2.graph.qq.com/check_sig`，p_skey 就在首个响应（常见为 302）
+  ///   的 Set-Cookie 里 —— 先照做；
+  /// - 拿不到时依次兜底：① 带 qrsig Cookie 重试（浏览器里的 check_sig 是带
+  ///   ptlogin 域登录 cookie 的）；② 直接请求 ptuiCB 返回的 check_sig URL
+  ///   （服务端给的 URL 带完整签名参数）；
+  /// - 每次请求/每一跳都记录 status、location、Set-Cookie 名称、p_skey 是否存在
+  ///   （值一律打码）；
+  /// - authorize 先 POST，取不到 code 时无条件降级 GET；
+  /// - QQLogin 记录外层/业务 code，业务成功才返回 data。
   Future<Map<String, dynamic>?> _exchangeLogin(
-      String uin, String ptsigx) async {
+      String uin, String ptsigx, String ptuiJumpUrl) async {
     try {
-      // 1) check_sig：p_skey 可能出现在首个 302 响应，也可能在后续跳转才下发，
-      //    因此手动跟随最多 3 跳并逐跳合并 Set-Cookie（Dio 自动跟随会丢中间 Set-Cookie）。
       final ptCookies = <String, String>{};
+      final steps = <String>[];
+      final primary = _checkSigCandidates.first;
       var gotPskey = false;
-      for (final base in _checkSigCandidates) {
+
+      // 1a) 参考实现同款：不带 Cookie，直接读首个响应 Set-Cookie
+      try {
+        steps.add(await _attemptCheckSig(
+          url: primary,
+          query: _checkSigParams(uin, ptsigx),
+          jar: ptCookies,
+          tag: 'check_sig#1(无Cookie)',
+          sendJar: false,
+        ));
+      } catch (e) {
+        steps.add('check_sig#1 异常 ${_describeError(e, '')}');
+        _log('check_sig#1 异常：$e');
+      }
+      gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
+
+      // 1b) 带上 qrsig（ptlogin 域 cookie）重试
+      final qrsig = _qrsig;
+      if (!gotPskey && qrsig != null && qrsig.isNotEmpty) {
+        ptCookies['qrsig'] = qrsig;
         try {
-          var resp = await JXHttp.dio.get(base,
-              queryParameters: _checkSigParams(uin, ptsigx),
-              options: Options(
-                followRedirects: false,
-                validateStatus: (s) => s != null && s < 500,
-                headers: {'Referer': 'https://xui.ptlogin2.qq.com/'},
-              ));
-          _collectSetCookies(resp.headers, ptCookies);
-
-          var hops = 0;
-          while ((ptCookies['p_skey'] ?? '').isEmpty && hops < 3) {
-            final rawLocation = _headerValue(resp.headers, 'location');
-            if (rawLocation.isEmpty) break;
-            if (resp.statusCode != 301 &&
-                resp.statusCode != 302 &&
-                resp.statusCode != 303 &&
-                resp.statusCode != 307) {
-              break;
-            }
-            hops++;
-            final target = rawLocation.startsWith('http')
-                ? rawLocation
-                : Uri.parse(base).resolve(rawLocation).toString();
-            resp = await JXHttp.dio.get(target,
-                options: Options(
-                  followRedirects: false,
-                  validateStatus: (s) => s != null && s < 500,
-                  headers: {
-                    'Referer': base,
-                    if (ptCookies.isNotEmpty) 'Cookie': _cookieStr(ptCookies),
-                  },
-                ));
-            _collectSetCookies(resp.headers, ptCookies);
-          }
-
-          if ((ptCookies['p_skey'] ?? '').isNotEmpty) {
-            gotPskey = true;
-            break;
-          }
-          _lastError = 'check_sig 无 p_skey（HTTP ${resp.statusCode}，'
-              'Location=${_headerValue(resp.headers, 'location')}，'
-              '已跳转 $hops 次，$base）';
+          steps.add(await _attemptCheckSig(
+            url: primary,
+            query: _checkSigParams(uin, ptsigx),
+            jar: ptCookies,
+            tag: 'check_sig#2(带qrsig)',
+          ));
         } catch (e) {
-          _lastError = _describeError(e, 'check_sig 请求失败（$base）');
+          steps.add('check_sig#2 异常 ${_describeError(e, '')}');
+          _log('check_sig#2 异常：$e');
+        }
+        gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
+      }
+
+      // 1c) 直接用服务端返回的 check_sig URL（ptuiCB 给的 URL 带完整签名参数）
+      final jump = ptuiJumpUrl.replaceAll('&amp;', '&');
+      if (!gotPskey && jump.isNotEmpty) {
+        final uri = Uri.tryParse(jump);
+        if (uri != null && uri.path.endsWith('check_sig')) {
+          try {
+            steps.add(await _attemptCheckSig(
+                url: jump, jar: ptCookies, tag: 'check_sig#3(服务端URL)'));
+          } catch (e) {
+            steps.add('check_sig#3 异常 ${_describeError(e, '')}');
+            _log('check_sig#3 异常：$e');
+          }
+          gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
         }
       }
+
+      // 1d) 其余 check_sig 候选（配置区可扩展域名/路径）
+      for (final base in _checkSigCandidates.skip(1)) {
+        if (gotPskey) break;
+        try {
+          steps.add(await _attemptCheckSig(
+            url: base,
+            query: _checkSigParams(uin, ptsigx),
+            jar: ptCookies,
+            tag: 'check_sig(候选$base)',
+          ));
+        } catch (e) {
+          steps.add('check_sig(候选$base) 异常 ${_describeError(e, '')}');
+        }
+        gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
+      }
+
       if (!gotPskey) {
-        _lastError ??= 'check_sig 无 p_skey（全部候选均失败）';
+        final detail = steps.isEmpty ? '无有效响应' : steps.join('；');
+        _lastError = 'QQ 扫码已确认，但 check_sig 未返回 p_skey（$detail）';
+        _log(_lastError!);
         return null;
       }
       _lastError = null;
       final pSkey = ptCookies['p_skey']!;
+      _log('check_sig 成功：p_skey=${_mask(pSkey)} '
+          '可用 cookie=[${ptCookies.keys.join(',')}]');
 
-      // 2) authorize：优先 POST 表单；405/400 时降级 GET 拼 query
+      // 2) authorize：先 POST 表单；取不到 code 时无条件降级 GET 再试
       var code = '';
       for (final base in _authorizeCandidates) {
         final params = _authorizeParams(pSkey);
@@ -713,33 +886,45 @@ class QQMusicApi implements MusicPlatformApi {
                 contentType: Headers.formUrlEncodedContentType,
                 followRedirects: false,
                 validateStatus: (s) => s != null && s < 500,
+                receiveTimeout: const Duration(seconds: 10),
                 headers: headers,
               ));
         } catch (e) {
           _lastError = _describeError(e, 'authorize POST 失败（$base）');
+          _log('${_lastError!}：$e');
         }
-        final status = resp?.statusCode;
-        if (resp != null && (status == 405 || status == 400)) {
+        code = resp == null ? '' : _extractCode(resp);
+        _log('authorize POST HTTP ${resp?.statusCode ?? '-'} '
+            'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))} '
+            'code=${_mask(code)}');
+        if (code.isEmpty) {
           try {
             resp = await JXHttp.dio.get(base,
                 queryParameters: params,
                 options: Options(
                   followRedirects: false,
                   validateStatus: (s) => s != null && s < 500,
+                  receiveTimeout: const Duration(seconds: 10),
                   headers: headers,
                 ));
           } catch (e) {
             _lastError = _describeError(e, 'authorize GET 降级失败（$base）');
+            _log('${_lastError!}：$e');
             resp = null;
           }
+          code = resp == null ? '' : _extractCode(resp);
+          _log('authorize GET HTTP ${resp?.statusCode ?? '-'} '
+              'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))} '
+              'code=${_mask(code)}');
         }
-        code = resp == null ? '' : _extractCode(resp);
         if (code.isNotEmpty) break;
-        _lastError ??=
-            'authorize 无 code（HTTP ${resp?.statusCode ?? '-'}，$base）';
+        _lastError = 'authorize 未取到 code（HTTP ${resp?.statusCode ?? '-'}，'
+            'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))}，'
+            '$base）';
       }
       if (code.isEmpty) return null;
       _lastError = null;
+      _log('authorize 成功：code=${_mask(code)}');
 
       // 3) QQLogin：主 base 失败（网络/5xx/JSON 异常/业务 code!=0）自动切备用 base
       for (final base in _qqLoginCandidates) {
@@ -764,18 +949,25 @@ class QQMusicApi implements MusicPlatformApi {
           }
           final bizCode = req['code'];
           final data = req['data'];
-          if (data is Map && (bizCode == 0 || bizCode == null)) {
+          final bizOk = bizCode == null || bizCode == 0 || '$bizCode' == '0';
+          final dataKeys =
+              data is Map ? data.keys.map((e) => '$e').join(',') : '-';
+          _log('QQLogin[$base] HTTP ${resp.statusCode} 外层code=$outerCode '
+              '业务code=$bizCode dataKeys=[$dataKeys]');
+          if (data is Map && bizOk) {
             _lastError = null;
             return Map<String, dynamic>.from(data);
           }
           _lastError = 'QQLogin 返回 code=${bizCode ?? outerCode}（$base）';
         } catch (e) {
           _lastError = _describeError(e, 'QQLogin 请求失败（$base）');
+          _log('${_lastError!}：$e');
         }
       }
       return null;
     } catch (e) {
       _lastError = _describeError(e, 'QQ 登录态兑换失败');
+      _log('${_lastError!}：$e');
       return null;
     }
   }

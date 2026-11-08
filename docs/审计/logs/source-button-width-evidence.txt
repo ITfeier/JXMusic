@@ -1,0 +1,19 @@
+﻿「音源」按钮宽度测量（任务 task-5 回归证据）
+测量方法: 截图 1080x1920 @480dpi (1dp=3px)，扫描进度条上方 y=1203~1210 行的浅灰胶囊连续像素段长度
+脚本: docs/审计/logs/measure_source_button.py
+
+== 修复前（task-2 引入通栏回归）== 截图: 14_player_page.png
+file: D:\Project\yinyue\JXMusic\docs\审计\screenshots\2026-11-09\14_player_page.png
+设备: 1080x1920 @480dpi (1dp = 3px)
+按钮胶囊包围盒: x=[72,1007] y=[1203,1210]
+按钮宽度: 936px = 312.0dp
+按钮高度(检测行范围): 8px = 2.7dp
+判定: FAIL（疑似通栏，>120dp）
+
+== 修复后（task-5）== 截图: 30_player_page_after_task5.png
+file: D:\Project\yinyue\JXMusic\docs\审计\screenshots\2026-11-09\30_player_page_after_task5.png
+设备: 1080x1920 @480dpi (1dp = 3px)
+按钮胶囊包围盒: x=[816,1007] y=[1203,1210]
+按钮宽度: 192px = 64.0dp
+按钮高度(检测行范围): 8px = 2.7dp
+判定: PASS（紧凑胶囊，<=120dp）

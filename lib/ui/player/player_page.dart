@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
@@ -174,7 +175,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                         child: Padding(
                           padding: const EdgeInsets.only(bottom: 2),
                           child: _SourceSwitchButton(
-                            label: '音源 · ${JXPlatform.name(song.platform)}',
                             onTap: _showSourceSheet,
                           ),
                         ),
@@ -499,6 +499,58 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
   }
 }
 
+/// 播放页封面边长（纯函数，便于单测）：
+/// 取「宽度 * 0.62」与「可用高度 - 文案块预算」的较小值，常态限制在
+/// [140, 300]；高度极端不足（如系统超大字体）时允许继续缩小，优先保证不溢出。
+///
+/// 背景（用户真机反馈）：360x640dp 下播放页 Expanded 扣掉安全区后高度不足，
+/// 固定 200~300 的大封面 + 标题/歌手/平台 Chip 会让 Column 溢出，Chip 被控制区
+/// 右上角的「音源」按钮盖住。这里改为按实际可用高度收缩封面。
+double jxPlayerCoverSize({
+  required double maxWidth,
+  required double maxHeight,
+  TextScaler textScaler = TextScaler.noScaling,
+}) {
+  final byWidth = (maxWidth * 0.62).clamp(140.0, 300.0).toDouble();
+  if (!maxHeight.isFinite) return byWidth;
+  final textBlock = _jxPlayerTextBlockHeight(textScaler, maxHeight);
+  // 预留 1dp 余量：文本行高存在浮点/字体度量的亚像素误差，避免刚好贴边被判溢出。
+  final byHeight = maxHeight - textBlock - 1;
+  if (byHeight < 140) return byHeight.clamp(0.0, 140.0).toDouble();
+  return math.min(byWidth, byHeight);
+}
+
+/// 矮屏（可用高度 <420dp，如 360x640 手机）收紧布局：封面与文案间距 12、
+/// 副标题与平台 Chip 间距 8；常规屏保持 40 / 12 的原观感。
+bool jxPlayerCompact(double maxHeight) =>
+    maxHeight.isFinite && maxHeight < 420;
+
+/// 封面与文案之间的间距：矮屏 12，常规 40。
+double jxPlayerCoverGap(double maxHeight) => jxPlayerCompact(maxHeight) ? 12 : 40;
+
+// 显式行高，保证不同字体/设备上行高可预测（M3 bodyMedium 默认 1.43 会偏高）。
+const double _jxTitleLineHeight = 1.3;
+const double _jxSubtitleLineHeight = 1.3;
+const double _jxChipLabelLineHeight = 1.2;
+
+/// 封面下方文案块的保守高度预算（与实际渲染用同一组行高，避免估小导致溢出）：
+/// 标题最多两行 + 歌手·专辑一行 + 平台 Chip（Chip 已设 shrinkWrap，最小高 32）。
+double _jxPlayerTextBlockHeight(TextScaler textScaler, double maxHeight) {
+  final compact = jxPlayerCompact(maxHeight);
+  final title = textScaler.scale(22) * _jxTitleLineHeight * 2;
+  final subtitle = textScaler.scale(14) * _jxSubtitleLineHeight;
+  final chip = math.max(
+    32.0,
+    textScaler.scale(11) * _jxChipLabelLineHeight + 16, // Chip 上下 padding 各 8
+  );
+  return jxPlayerCoverGap(maxHeight) +
+      title +
+      8 +
+      subtitle +
+      (compact ? 8 : 12) +
+      chip;
+}
+
 /// 专辑封面视图（旋转 + 液态玻璃氛围）
 class _AlbumArtView extends StatelessWidget {
   final Song song;
@@ -516,46 +568,72 @@ class _AlbumArtView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final w = MediaQuery.of(context).size.width;
-    final size = (w * 0.62).clamp(200.0, 300.0); // 手机 360~430dp 自适应大封面
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          RotationTransition(
-            turns: spin,
-            child: _GlowCover(url: song.coverUrl, size: size),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        final size = jxPlayerCoverSize(
+          maxWidth: width,
+          maxHeight: constraints.maxHeight,
+          textScaler: MediaQuery.textScalerOf(context),
+        );
+        final gap = jxPlayerCoverGap(constraints.maxHeight);
+        final compact = jxPlayerCompact(constraints.maxHeight);
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (size > 0) ...[
+                RotationTransition(
+                  turns: spin,
+                  child: _GlowCover(url: song.coverUrl, size: size),
+                ),
+                SizedBox(height: gap),
+              ],
+              Text(
+                song.title,
+                style: TextStyle(
+                  fontSize: 22,
+                  height: _jxTitleLineHeight,
+                  fontWeight: FontWeight.w700,
+                  color: textColor,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '${song.artist} · ${song.album}',
+                style: TextStyle(
+                  fontSize: 14,
+                  height: _jxSubtitleLineHeight,
+                  color: textSub,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              SizedBox(height: compact ? 8 : 12),
+              Chip(
+                label: Text(
+                  song.displayPlatform,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    height: _jxChipLabelLineHeight,
+                  ),
+                ),
+                backgroundColor: Colors.transparent,
+                side: BorderSide(color: textSub.withValues(alpha: 0.4)),
+                visualDensity: VisualDensity.compact,
+                // 平台 Chip 不可点击：不占 48dp 的最小点按高度，矮屏也能塞下
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+            ],
           ),
-          const SizedBox(height: 40),
-          Text(
-            song.title,
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: textColor,
-            ),
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '${song.artist} · ${song.album}',
-            style: TextStyle(fontSize: 14, color: textSub),
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: 12),
-          Chip(
-            label: Text(song.displayPlatform,
-                style: const TextStyle(fontSize: 11)),
-            backgroundColor: Colors.transparent,
-            side: BorderSide(color: textSub.withValues(alpha: 0.4)),
-            visualDensity: VisualDensity.compact,
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -1043,56 +1121,62 @@ class _QueueSheet extends ConsumerWidget {
 }
 
 /// 音源切换二级按钮（控制区、进度条上方右侧）：
-/// swap 图标 + 「音源 · 当前平台」+ 展开箭头，点击弹出音源选择面板。
+/// 按用户要求只显示「音源」二字，不再显示 swap 图标 / 平台名 / 展开箭头；
+/// 保留玻璃胶囊视觉，点击弹出「选择音源」面板，Semantics/Tooltip 供读屏与长按提示。
 class _SourceSwitchButton extends StatelessWidget {
-  final String label;
   final VoidCallback onTap;
 
-  const _SourceSwitchButton({required this.label, required this.onTap});
+  const _SourceSwitchButton({required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final textSub =
         isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 26,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          color: (isDark ? JXColors.glassDark : JXColors.glassLight)
-              .withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(13),
-          border: Border.all(
-            color: isDark
-                ? JXColors.glassStrokeDark
-                : JXColors.glassStrokeLight,
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.swap_horiz_rounded,
-                size: 14, color: JXColors.primary),
-            const SizedBox(width: 4),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 150),
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w600,
-                  color: textSub,
-                ),
+    return Semantics(
+      button: true,
+      label: '切换音源',
+      child: Tooltip(
+        message: '切换音源',
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            // 注意：不要给这个 Container 设置 alignment！
+            // Container 带 alignment 时会在 bounded 约束下撑满可用宽度，
+            // 曾导致「音源」胶囊变成整行通栏（真机/截图回归）。
+            // 这里用 Row(mainAxisSize.min) 决定内容宽度，minWidth 64 只保证点按尺寸。
+            key: const Key('sourceSwitchButton'),
+            height: 26,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            constraints: const BoxConstraints(minWidth: 64),
+            decoration: BoxDecoration(
+              color: (isDark ? JXColors.glassDark : JXColors.glassLight)
+                  .withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(13),
+              border: Border.all(
+                color: isDark
+                    ? JXColors.glassStrokeDark
+                    : JXColors.glassStrokeLight,
               ),
             ),
-            const Icon(Icons.expand_less_rounded,
-                size: 14, color: JXColors.primary),
-          ],
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  '音源',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                    color: textSub,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );

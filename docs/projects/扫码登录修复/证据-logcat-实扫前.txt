@@ -1,0 +1,16 @@
+﻿# 实扫前 logcat 证据（2026-11-09，MuMu emulator-5554，release 重构建包）
+
+- 采集命令：`adb -s emulator-5554 logcat -c` 然后 `adb -s emulator-5554 logcat -s flutter`
+- 证明三件事：(1) release 包下 Dart print 日志能进 logcat；(2) 新代码已生效（有新增日志）；(3) QQ 取码成功、轮询处于等待扫码态。
+
+```
+
+11-09 01:32:45.664  9129  9129 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+11-09 01:33:01.549  9494  9494 I flutter : [JXMusic][QQ登录] 取码 HTTP=200 qrsig=3d15…a15c(len=128) PNG=439字节 set-cookie=[qrsig]
+11-09 01:33:01.549  9494  9494 I flutter : [JXMusic][扫码登录] 取码完成：qrUrl 已生成，key 长度=128
+11-09 01:33:03.605  9494  9494 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+11-09 01:33:05.613  9494  9494 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+11-09 01:33:07.606  9494  9494 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+11-09 01:33:09.657  9494  9494 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+11-09 01:33:11.635  9494  9494 I flutter : [JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+```

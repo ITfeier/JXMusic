@@ -7,6 +7,7 @@ import '../providers.dart';
 import '../services/playback.dart';
 import 'glass.dart';
 import 'playlist_detail_page.dart';
+import 'playlist_list_page.dart';
 import 'playlist_row.dart';
 import 'layout.dart';
 
@@ -21,7 +22,7 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
-  // 初值必须是 false：initState 里的 _load() 会被 `else if (_loading) return;`
+  // 初值必须是 false：initState 里的 _load() 会被 `if (_loading) return;`
   // 守卫拦住，若初值为 true 则首次加载永远不发起（0.9.3 引入的首页永久转圈 bug）。
   bool _loading = false;
   final Map<int, List<Song>> _tops = {};
@@ -29,8 +30,6 @@ class _HomePageState extends ConsumerState<HomePage> {
   /// 分平台推荐歌单：0=QQ、1=网易云、2=酷狗
   final Map<int, List<Playlist>> _playlistsByPlatform = {};
 
-  /// 歌单批次（「换一批」翻页）
-  int _batch = 1;
   DateTime? _lastLoaded;
   String? _error;
 
@@ -40,12 +39,8 @@ class _HomePageState extends ConsumerState<HomePage> {
     _load();
   }
 
-  Future<void> _load({bool nextBatch = false}) async {
-    if (nextBatch) {
-      _batch++;
-    } else if (_loading) {
-      return;
-    }
+  Future<void> _load() async {
+    if (_loading) return;
     setState(() {
       _loading = true;
       _error = null;
@@ -73,8 +68,7 @@ class _HomePageState extends ConsumerState<HomePage> {
         final api = hub.api(p);
         if (api == null) continue;
         try {
-          final list =
-              await api.recommendPlaylists(size: 10, page: _batch);
+          final list = await api.recommendPlaylists(size: 10);
           if (mounted) {
             setState(() => _playlistsByPlatform[p] = list);
           }
@@ -101,6 +95,13 @@ class _HomePageState extends ConsumerState<HomePage> {
   void _openPlaylist(Playlist playlist) {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => PlaylistDetailPage(playlist: playlist),
+    ));
+  }
+
+  /// 该平台「全部歌单」页（分页网格；替代旧版「换一批」）
+  void _openAllPlaylists(int platform) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PlaylistListPage(platform: platform),
     ));
   }
 
@@ -153,12 +154,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ),
               ),
             ),
-          // 分平台推荐歌单（三平台各自展示；「换一批」翻页，回首页超 60s 自动刷新）
+          // 分平台推荐歌单（三平台各自展示；「更多」进入该平台全部歌单页，
+          // 回首页超 60s 自动刷新）
           for (final platform in const [0, 1, 2]) ...[
             SliverToBoxAdapter(
               child: JXSectionHeader(
                 title: '${JXPlatform.name(platform)} · 推荐歌单',
-                onMore: () => _load(nextBatch: true),
+                onMore: () => _openAllPlaylists(platform),
               ),
             ),
             SliverToBoxAdapter(
@@ -254,13 +256,13 @@ class _HomePageState extends ConsumerState<HomePage> {
               child: JXBanner(compact: true, onPlay: () => _playTop()),
             ),
           ),
-          // 分平台推荐歌单（横滑卡片，宽度随屏宽缩放；「换一批」翻页）
+          // 分平台推荐歌单（横滑卡片，宽度随屏宽缩放；「更多」进入全部歌单页）
           for (final platform in const [0, 1, 2]) ...[
             SliverToBoxAdapter(
               child: JXSectionHeader(
                   title: '${JXPlatform.name(platform)} · 推荐歌单',
                   paddingLeft: 16,
-                  onMore: () => _load(nextBatch: true)),
+                  onMore: () => _openAllPlaylists(platform)),
             ),
             SliverToBoxAdapter(
               child: JXPlaylistRow(

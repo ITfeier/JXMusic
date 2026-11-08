@@ -1,0 +1,24 @@
+﻿E2E 环境：emulator-5556 / model=Android SDK built for x86_64 / Android 15 (API 35) / 1080x1920 @480dpi = 360x640dp
+APK: D:\Project\yinyue\JXMusic\build\app\outputs\flutter-apk\app-release.apk
+APK size=106674209 bytes, mtime=2026-11-09 01:47:33, sha256=D3FC308B9EFBA21F9EB293B6F5213B101A06174D009AE347B419C60FD9FAF2B1
+
+=== 冷启动后 cover 失败日志（预期为空）===
+cover 日志条数=0
+=== 历史崩溃（旧进程，非本轮验证路径）===
+11-08 17:50:27.712  3198  3198 F DEBUG   :       #11 pc 00000000004810bd  /data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk!libmpv.so (offset 0x5648000)
+11-08 17:50:38.718  3223  3223 D nativeloader: Load /data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk!/lib/x86_64/libmpv.so using ns clns-7 from class loader (caller=/data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk): ok
+11-08 17:51:14.197  3459  3459 D nativeloader: Load /data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk!/lib/x86_64/libmpv.so using ns clns-7 from class loader (caller=/data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk): ok
+11-08 17:51:54.809  3693  3693 D nativeloader: Load /data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk!/lib/x86_64/libmpv.so using ns clns-7 from class loader (caller=/data/app/~~6cB1mLppYPWoCmu3Ieuz6w==/com.jxmusic.jxmusic-MBlNWXisoCZ-l8ODeCrzPw==/base.apk): ok
+=== 当前包信息 ===
+versionName=0.9.7
+lastUpdateTime=2026-11-08 17:47:55
+
+=== task-5 最终门禁/复测（2026-11-09 02:07:44 构建）===
+flutter analyze lib: No issues found! (ran in 2.2s)
+flutter test: 00:11 +113 ~4: All tests passed! (113 passed / 4 skipped)
+APK: D:\Project\yinyue\JXMusic\build\app\outputs\flutter-apk\app-release.apk
+APK size=106674209 bytes, mtime=2026-11-09 02:07:44, sha256=B4A28C28C6EDFCC7AAF4BA433B6B4D31A2FA37A89C3C3EC39CC1E824101626BE
+安装: adb -s emulator-5556 uninstall 后 install -r（Success），冷启动 Status: ok / COLD / TotalTime 1646ms
+封面失败日志: 0 条（全程）
+音源按钮宽度: 修复前 936px/312.0dp（FAIL，14_player_page.png）→ 修复后 192px/64.0dp（PASS，30_player_page_after_task5.png）
+复测截图: 27_home_after_task5.png / 28_search_after_task5.png / 29_search_playing_after_task5.png / 30_player_page_after_task5.png / 31_source_panel_after_task5.png / 32_home_playing_after_task5.png

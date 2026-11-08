@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 0.9.8+17 — 2026-11-09
+
+### 修复（真机反馈：首页歌单 / 播放页）
+- **首页 QQ 推荐歌单标题乱码**：QQ 歌单广场接口 `fcg_get_diss_by_tag.fcg` 默认按 GB2312/GBK 返回（响应头 `charset=gb2312`），Dio 按 UTF-8 解码成 `�` 替换字符。请求显式带 `inCharset/outCharset=utf-8`（URI 构造抽成 `dissByTagUri` 并加回归单测），中文标题恢复正常。
+- **首页「更多」无法查看更多歌单**：原逻辑只是 `_load(nextBatch: true)` 换一批，用户看不到更多歌单。新增「<平台> · 全部歌单」分页页（`lib/ui/playlist_list_page.dart`）：网格卡片（复用 `JXPlaylistCard` 视觉）、三平台分页（QQ sin/ein、网易云 offset、酷狗 page）、滚动触底自动加载、加载中/没有更多/空态/失败重试，点卡片进歌单详情；首页桌面/手机两处「更多」改为进入该页。
+- **播放页音源按钮**：按用户要求只显示「音源」二字（去掉 swap 图标、平台名、展开箭头），保留点击弹「选择音源」面板；按钮为右侧紧凑胶囊 64×26dp（修复「`Container(alignment)` 在 bounded 约束下撑满成整行通栏」的回归，补按钮宽度/右对齐/不压平台 Chip 的 widget 回归用例）。
+- **播放页 360x640dp 布局重叠**：`_AlbumArtView` 改 LayoutBuilder 按可用高度自适应封面尺寸（`jxPlayerCoverSize`，140~300dp、矮屏收紧间距、显式行高），修复 Expanded 内容溢出导致平台 Chip 被音源按钮压住。
+- **播放器不显示封面**：
+  - 网易云搜索接口 `album` 只有 `picId` 没有 `picUrl` → 搜索后批量调 `/api/song/detail` 按 id 只回填空封面（纯函数 + 单测），失败不影响搜索；
+  - **网易云封面全部 403 的真根因**：Flutter `Image.network(headers:)` 内部用 `request.headers.add()`，与 dart:io 默认 UA 组合成 `Dart/3.13 (dart:io), Mozilla/5.0 ...` 两段 UA，网易云 CDN 直接 403。改用自定义 `JXNetworkImage`（共享 HttpClient 以 `userAgent` 属性设单值 Chrome UA，请求头只 `set` Referer；带 403 诊断日志、失败清 ImageCache、网易云优先 `?param=500y500` 缩略图提速）。实测：add 组合 UA → 403，set/单值 UA → 200。
+  - 首页/搜索/播放页/迷你条封面统一走新链路；新增 `tool/check_cover_image.dart` 联网探针。
+- 同批合入并行工作进行中的「扫码登录链路诊断增强」（设置页/QQ 接口的脱敏诊断日志、`qr_login_diagnostic_test.dart`、`tool/check_netease_qr.dart` 等），便于真机实扫排障；不改变扫码协议本身。
+
+### 测试
+- `flutter analyze lib` 零问题；`flutter test` **113 passed / 4 skipped**（本轮新增 44 个用例：全部歌单页分页/空态/失败/详情、QQ GBK 回归、网易云封面回填、封面 UA/重试/日志、播放页 360x640 布局与音源按钮尺寸等）
+- Android 15 模拟器（1080x1920@480 → 360x640dp）端到端 **25 项全 PASS**：QQ 标题中文、三平台「更多」→ 全部歌单分页、播放页音源按钮/布局/封面、搜索与播放回归；封面失败日志 0 条
+- 详细报告与截图证据：`docs/审计/2026-11-09-缺陷修复测试报告.md`、`docs/审计/screenshots/2026-11-09/`
+
 ## 0.9.7+16 — 2026-11-09
 
 ### 修复 / 调整（真机反馈：播放页音源切换）

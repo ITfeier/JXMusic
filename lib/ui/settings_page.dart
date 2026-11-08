@@ -380,6 +380,12 @@ Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) asy
   // 持久化登录态（Hive）+ 同步平台客户端 cookie，重启后依然有效
   ref.read(accountProvider(platform).notifier).login(account);
   ref.read(musicHubProvider).api(platform)?.restoreSession(account);
+  // 诊断日志：登录成功后刷新一次 provider 状态，确认内存态确实已更新
+  final persisted = ref.read(accountProvider(platform));
+  debugPrint('[JXMusic][扫码登录] 登录态已写入：platform=$platform '
+      'nickname=${persisted?.nickname ?? '-'} '
+      'cookies=${persisted?.cookies.length ?? 0} '
+      'lastError=${api.lastError ?? '-'}');
   // 降级登录（如酷狗 token 交换失败）时接口层会写 lastError，这里如实提示用户
   final warning = api.lastError;
   final name = JXPlatform.name(platform);
@@ -424,8 +430,11 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
     try {
       final created = await widget.api.createQrLogin();
       if (!mounted || _done) return;
+      debugPrint('[JXMusic][扫码登录] 取码完成：qrUrl ${created.qrUrl.isEmpty ? '空' : '已生成'}'
+          '，key 长度=${created.key.length}');
       if (created.qrUrl.isEmpty) {
         setState(() => _hint = _failHint());
+        debugPrint('[JXMusic][扫码登录] 取码失败：$_hint');
         return;
       }
       setState(() {
@@ -434,8 +443,9 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
       });
       _timer = Timer.periodic(
           const Duration(seconds: 2), (_) => _poll(created.key));
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
+      debugPrint('[JXMusic][扫码登录] 取码异常：$e');
       setState(() => _hint = _failHint());
     }
   }
@@ -458,7 +468,12 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
     if (_done || _polling) return;
     if (_polls >= 60) {
       _timer?.cancel();
-      setState(() => _hint = '二维码已过期，请关闭后重试');
+      final detail = widget.api.lastError;
+      debugPrint('[JXMusic][扫码登录] 轮询超时（2 分钟）：'
+          'lastError=${detail ?? '-'}');
+      setState(() => _hint = detail != null && detail.trim().isNotEmpty
+          ? detail
+          : '二维码已过期，请关闭后重试');
       return;
     }
     _polls++;
@@ -469,6 +484,8 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
       if (session != null) {
         _done = true;
         _timer?.cancel();
+        debugPrint('[JXMusic][扫码登录] 轮询成功：'
+            'nickname=${session.nickname} cookies=${session.cookies.length}');
         Navigator.of(context).pop(session);
         return;
       }
@@ -480,8 +497,14 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
       } else if (_hint != '请使用对应平台 App 扫码登录') {
         setState(() => _hint = '请使用对应平台 App 扫码登录');
       }
-    } catch (_) {
-      // 单次轮询失败忽略，继续下一轮
+    } catch (e) {
+      // 单次轮询失败不再静默：优先展示接口层原因，否则给出网络层原因（下一轮会自动重试）
+      final detail = widget.api.lastError;
+      debugPrint('[JXMusic][扫码登录] 轮询异常：$e（lastError=${detail ?? '-'}）');
+      if (!mounted) return;
+      setState(() => _hint = detail != null && detail.trim().isNotEmpty
+          ? detail
+          : '扫码登录轮询失败：$e（正在自动重试）');
     } finally {
       _polling = false;
     }
