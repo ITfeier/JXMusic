@@ -133,45 +133,64 @@ class QQMusicApi implements MusicPlatformApi {
   @override
   Future<List<Song>> searchSongs(String keyword,
       {int page = 1, int size = 30}) async {
+    // QQ 搜索接口单页最多约 60 条（n=100 会返回空），因此大请求量在内部按页累加，
+    // 保证「搜索 100 首」时 QQ 也能贡献完整结果。
+    const maxPerPage = 50;
+    final out = <Song>[];
+    var currentPage = page;
     try {
-      final resp = await JXHttp.dio.get(_search, queryParameters: {
-        'p': page,
-        'n': size,
-        'w': keyword,
-        'format': 'json',
-        'inCharset': 'utf-8',
-        'outCharset': 'utf-8',
-      });
-      final songList =
-          ((resp.data['data']?['song']?['list']) as List?) ?? const [];
-      return songList.map<Song>((s) {
-        final m = s as Map<String, dynamic>;
-        final singers = (m['singer'] as List? ?? [])
-            .map((x) => (x as Map)['name'] as String? ?? '')
-            .join('、');
-        // QQ 搜索接口 pay 字段为对象（{payplay:0/1}）而非 int，需兼容两种形态
-        final pay = m['pay'];
-        var payplay = 0;
-        if (pay is Map) {
-          payplay = (pay['payplay'] as int?) ?? 0;
-        } else if (pay is int) {
-          payplay = pay;
-        }
-        return Song(
-          id: m['songmid'] as String? ?? '',
-          platform: platform,
-          title: m['songname'] as String? ?? '',
-          artist: singers,
-          album: m['albumname'] as String? ?? '',
-          coverUrl:
-              'https://y.qq.com/music/photo_new/T002R300x300M000${m['albummid']}.jpg',
-          duration: (m['interval'] as int? ?? 0),
-          vip: payplay > 0,
-        );
-      }).toList();
+      while (out.length < size) {
+        final want = (size - out.length).clamp(1, maxPerPage);
+        final batch = await _searchPage(keyword, currentPage, want);
+        if (batch.isEmpty) break;
+        out.addAll(batch);
+        if (batch.length < want) break;
+        currentPage++;
+        if (currentPage - page > 10) break; // 安全上限，避免无限翻页
+      }
+      return out.take(size).toList();
     } catch (_) {
-      return const [];
+      return out;
     }
+  }
+
+  /// 单页 QQ 搜索（n 建议 <= 60）
+  Future<List<Song>> _searchPage(String keyword, int page, int size) async {
+    final resp = await JXHttp.dio.get(_search, queryParameters: {
+      'p': page,
+      'n': size,
+      'w': keyword,
+      'format': 'json',
+      'inCharset': 'utf-8',
+      'outCharset': 'utf-8',
+    });
+    final songList =
+        ((resp.data['data']?['song']?['list']) as List?) ?? const [];
+    return songList.map<Song>((s) {
+      final m = s as Map<String, dynamic>;
+      final singers = (m['singer'] as List? ?? [])
+          .map((x) => (x as Map)['name'] as String? ?? '')
+          .join('、');
+      // QQ 搜索接口 pay 字段为对象（{payplay:0/1}）而非 int，需兼容两种形态
+      final pay = m['pay'];
+      var payplay = 0;
+      if (pay is Map) {
+        payplay = (pay['payplay'] as int?) ?? 0;
+      } else if (pay is int) {
+        payplay = pay;
+      }
+      return Song(
+        id: m['songmid'] as String? ?? '',
+        platform: platform,
+        title: m['songname'] as String? ?? '',
+        artist: singers,
+        album: m['albumname'] as String? ?? '',
+        coverUrl:
+            'https://y.qq.com/music/photo_new/T002R300x300M000${m['albummid']}.jpg',
+        duration: (m['interval'] as int? ?? 0),
+        vip: payplay > 0,
+      );
+    }).toList();
   }
 
   @override

@@ -158,8 +158,25 @@ class PlayerService extends ChangeNotifier {
     return r;
   }
 
-  /// 播放单曲：若在队列中则定位，否则替换队列
-  Future<void> playSong(Song song, {List<Song>? queue}) async {
+  /// 各曲目的多平台音源（key = song.globalId），用于播放页切换音源
+  final Map<String, List<Song>> _sourcesBySong = {};
+
+  /// 当前曲目可用的全部音源（单平台播放时为空列表）
+  List<Song> get currentSources => currentSong == null
+      ? const []
+      : (_sourcesBySong[currentSong!.globalId] ?? const []);
+
+  /// 当前曲目音源按平台顺序（QQ → 网易云 → 酷狗）
+  List<Song> get orderedSources => [...currentSources]
+    ..sort((a, b) => a.platform.compareTo(b.platform));
+
+  /// 播放单曲：若在队列中则定位，否则替换队列。
+  /// [sources] 传入该曲目在其它平台的音源，用于播放页「切换音源」。
+  Future<void> playSong(Song song,
+      {List<Song>? queue, List<Song>? sources}) async {
+    if (sources != null && sources.isNotEmpty) {
+      _sourcesBySong[song.globalId] = List<Song>.unmodifiable(sources);
+    }
     if (queue != null) {
       _queue
         ..clear()

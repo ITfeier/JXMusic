@@ -7,6 +7,7 @@ import '../../models/lyric.dart';
 import '../../providers.dart';
 import '../../services/download_service.dart';
 import '../../services/library_store.dart';
+import '../../services/playback.dart';
 import '../../services/player_service.dart';
 import '../dialogs.dart';
 import '../glass.dart';
@@ -137,6 +138,50 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                   ],
                 ),
               ),
+
+              // 音源切换：同一首歌在多个平台都有音源时，横向列出可切换
+              if (player.currentSources.length > 1)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
+                  child: Row(
+                    children: [
+                      Icon(Icons.swap_horiz_rounded,
+                          size: 16, color: textSub),
+                      const SizedBox(width: 4),
+                      Text('音源',
+                          style: TextStyle(fontSize: 11, color: textSub)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              for (final s in player.orderedSources)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 6),
+                                  child: _SourceButton(
+                                    song: s,
+                                    selected: s.globalId == song.globalId,
+                                    onTap: () async {
+                                      if (s.globalId == song.globalId) return;
+                                      final ok = await switchSource(ref, s);
+                                      if (!ok && context.mounted) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(SnackBar(
+                                          content: Text(
+                                              '${JXPlatform.name(s.platform)} 音源暂时不可用'),
+                                        ));
+                                      }
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
 
               // 主体
               Expanded(
@@ -964,6 +1009,77 @@ class _QueueSheet extends ConsumerWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 播放页音源切换按钮（QQ/网易云/酷狗）
+class _SourceButton extends StatelessWidget {
+  final Song song;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SourceButton({
+    required this.song,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = JXPlatform.color(song.platform);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? color.withValues(alpha: 0.22)
+              : (isDark ? JXColors.glassDark : JXColors.glassLight)
+                  .withValues(alpha: 0.5),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? color
+                : (isDark
+                    ? JXColors.glassStrokeDark
+                    : JXColors.glassStrokeLight),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 6,
+              height: 6,
+              decoration:
+                  BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 5),
+            Text(
+              JXPlatform.name(song.platform),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight:
+                    selected ? FontWeight.w700 : FontWeight.w400,
+                color: selected ? color : null,
+              ),
+            ),
+            if (song.vip) ...[
+              const SizedBox(width: 4),
+              const Text(
+                'VIP',
+                style: TextStyle(
+                    fontSize: 8.5,
+                    color: JXColors.accentPink,
+                    fontWeight: FontWeight.w700),
+              ),
+            ],
+          ],
         ),
       ),
     );

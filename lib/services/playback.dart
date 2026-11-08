@@ -18,10 +18,11 @@ Future<bool> resolveAndPlay(
   WidgetRef ref,
   Song song, {
   List<Song>? queue,
+  List<Song>? sources,
 }) async {
   final player = ref.read(playerServiceProvider);
   if (song.platform == JXPlatform.local) {
-    await player.playSong(song, queue: queue);
+    await player.playSong(song, queue: queue, sources: sources);
     return true;
   }
   final hub = ref.read(musicHubProvider);
@@ -51,7 +52,7 @@ Future<bool> resolveAndPlay(
 
   playable = playable.copyWith(audioUrl: url);
   if (queue == null) {
-    await player.playSong(playable);
+    await player.playSong(playable, sources: sources);
   } else {
     await player.playSong(
       playable,
@@ -59,9 +60,39 @@ Future<bool> resolveAndPlay(
         for (final s in queue)
           if (s.globalId == song.globalId) playable else s,
       ],
+      sources: sources,
     );
   }
   return true;
+}
+
+/// 播放聚合曲目：按「非 VIP 优先」依次尝试各平台音源，成功即播放。
+Future<bool> playTrackGroup(WidgetRef ref, List<Song> sources) async {
+  if (sources.isEmpty) return false;
+  final ordered = [...sources]
+    ..sort((a, b) => (a.vip ? 1 : 0).compareTo(b.vip ? 1 : 0));
+  for (final source in ordered) {
+    if (await resolveAndPlay(ref, source, sources: ordered)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// 播放中切换音源：保持当前播放进度。
+Future<bool> switchSource(WidgetRef ref, Song source) async {
+  final player = ref.read(playerServiceProvider);
+  final position = player.position;
+  final sources = player.currentSources;
+  final ok = await resolveAndPlay(
+    ref,
+    source,
+    sources: sources.isEmpty ? <Song>[source] : sources,
+  );
+  if (ok && position > Duration.zero) {
+    await player.seek(position);
+  }
+  return ok;
 }
 
 /// 在其它平台搜索同名/同歌手歌曲，返回第一个能解析出直链的免费版本。
