@@ -17,7 +17,6 @@ class KuGouApi implements MusicPlatformApi {
       'https://songsearch.kugou.com/song_search_v2';
   static const String _playData = 'https://wwwapi.kugou.com/yy/index.php';
   static const String _songInfo = 'https://m.kugou.com/app/i/getSongInfo.php';
-  static const String _top = 'https://www.kugou.com/yy/index.php';
 
   // ---- 酷狗官方扫码登录（Web 登录页 login-user.kugou.com 协议）----
   // 协议来源：www.kugou.com 登录弹窗 popuplogin.v3.min.js + kguser.v2.min.js
@@ -280,27 +279,29 @@ class KuGouApi implements MusicPlatformApi {
 
   @override
   Future<List<Song>> topSongs({int page = 1, int size = 30}) async {
+    // 酷狗 TOP500：m.kugou.com/rank/info（2026-11 实测可用；
+    // 旧 www.kugou.com/yy/index.php?r=rank/list 已返回 "Access Deny"）
     try {
-      // 酷狗 TOP500: rankid 8888
-      final resp = await JXHttp.dio.get(_top, queryParameters: {
-        'r': 'rank/list',
-        'rankid': 8888,
-        'page': page,
-        'pagesize': size,
-        'platid': 4,
-      });
-      final list = ((resp.data['data']?['songs']) as List?) ?? const [];
-      return list.map<Song>((s) {
-        final m = s as Map<String, dynamic>;
+      final resp = await JXHttp.dio.get('https://m.kugou.com/rank/info/',
+          queryParameters: {'rankid': 8888, 'page': page, 'json': 'true'},
+          options: Options(headers: {'Referer': 'https://m.kugou.com/'}));
+      final root = resp.data;
+      final songs = (root is Map ? root['songs'] : null);
+      final list = (songs is Map ? songs['list'] as List? : null) ?? const [];
+      return list.take(size).map<Song>((s) {
+        final m = s as Map;
         final filename = _clean(m['filename'] as String?);
+        final cover = (m['trans_param'] as Map?)?['union_cover'] as String? ??
+            m['album_sizable_cover'] as String?;
         return Song(
           id: m['hash'] as String? ?? '',
           platform: platform,
           title: filename,
           artist: _parseArtist(filename),
-          album: _clean(m['album_name'] as String?),
-          coverUrl: _image(m['img'] as String?),
-          duration: (m['duration'] as int? ?? 0) ~/ 1000,
+          album: '',
+          coverUrl: _image(cover),
+          duration: (m['duration'] as num?)?.toInt() ?? 0,
+          vip: ((m['privilege'] as num?)?.toInt() ?? 0) >= 10,
         );
       }).toList();
     } catch (_) {

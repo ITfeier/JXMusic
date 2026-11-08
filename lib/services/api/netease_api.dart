@@ -235,7 +235,7 @@ class NeteaseApi implements MusicPlatformApi {
       final resp = await JXHttp.dio.get('$_musicBase/api/v6/playlist/detail',
           queryParameters: {'id': 19723756, 'n': 100});
       final tracks = (resp.data['playlist']['tracks'] as List?) ?? [];
-      return tracks.map<Song>((s) {
+      return tracks.take(size).map<Song>((s) {
         final m = s as Map<String, dynamic>;
         final artists = (m['ar'] as List? ?? [])
             .map((a) => (a as Map)['name'] as String? ?? '')

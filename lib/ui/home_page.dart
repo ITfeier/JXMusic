@@ -7,6 +7,7 @@ import '../providers.dart';
 import '../services/playback.dart';
 import 'glass.dart';
 import 'playlist_detail_page.dart';
+import 'playlist_row.dart';
 import 'layout.dart';
 
 /// 首页（双端独立布局）：
@@ -22,7 +23,13 @@ class HomePage extends ConsumerStatefulWidget {
 class _HomePageState extends ConsumerState<HomePage> {
   bool _loading = true;
   final Map<int, List<Song>> _tops = {};
-  List<Playlist> _playlists = [];
+
+  /// 分平台推荐歌单：0=QQ、1=网易云、2=酷狗
+  final Map<int, List<Playlist>> _playlistsByPlatform = {};
+
+  /// 歌单批次（「换一批」翻页）
+  int _batch = 1;
+  DateTime? _lastLoaded;
   String? _error;
 
   @override
@@ -31,7 +38,12 @@ class _HomePageState extends ConsumerState<HomePage> {
     _load();
   }
 
-  Future<void> _load() async {
+  Future<void> _load({bool nextBatch = false}) async {
+    if (nextBatch) {
+      _batch++;
+    } else if (_loading) {
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -49,15 +61,27 @@ class _HomePageState extends ConsumerState<HomePage> {
         }(),
     ];
 
-    // 推荐歌单：网易云 + 酷狗聚合
+    // 三平台推荐歌单各自拉取（分平台展示，互不影响）
     futures.add(() async {
-      final lists = <Playlist>[];
-      for (final p in const [JXPlatform.netease, JXPlatform.kugou]) {
+      for (final p in const [
+        JXPlatform.qq,
+        JXPlatform.netease,
+        JXPlatform.kugou,
+      ]) {
         final api = hub.api(p);
         if (api == null) continue;
-        lists.addAll(await api.recommendPlaylists(size: 12));
+        try {
+          final list =
+              await api.recommendPlaylists(size: 10, page: _batch);
+          if (mounted) {
+            setState(() => _playlistsByPlatform[p] = list);
+          }
+        } catch (_) {
+          if (mounted) {
+            setState(() => _playlistsByPlatform[p] = const []);
+          }
+        }
       }
-      if (mounted) setState(() => _playlists = lists);
     }());
 
     try {
@@ -65,11 +89,30 @@ class _HomePageState extends ConsumerState<HomePage> {
     } catch (e) {
       if (mounted) setState(() => _error = '数据加载失败：$e');
     }
-    if (mounted) setState(() => _loading = false);
+    if (mounted) {
+      setState(() => _loading = false);
+      _lastLoaded = DateTime.now();
+    }
+  }
+
+  /// 从歌单卡片进入详情
+  void _openPlaylist(Playlist playlist) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PlaylistDetailPage(playlist: playlist),
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    // 切回首页且距上次加载超过 1 分钟时自动刷新（保证歌单/榜单不是陈旧数据）
+    ref.listen<int>(navIndexProvider, (previous, next) {
+      if (next == 0 && !_loading) {
+        final last = _lastLoaded;
+        if (last == null || DateTime.now().difference(last).inMinutes >= 1) {
+          _load();
+        }
+      }
+    });
     return isDesktopLayout(context)
         ? _buildDesktop(context)
         : _buildMobile(context);
@@ -108,85 +151,22 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ),
               ),
             ),
-          // 推荐歌单：多列网格（自动按宽度分列）
-          SliverToBoxAdapter(
-            child: JXSectionHeader(title: '推荐歌单', onMore: _load),
-          ),
-          if (_playlists.isEmpty)
-            SliverToBoxAdapter(child: const SizedBox(height: 60))
-          else
-            SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              sliver: SliverGrid(
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 250,
-                  mainAxisSpacing: 14,
-                  crossAxisSpacing: 14,
-                  childAspectRatio: 1.5,
-                ),
-                delegate: SliverChildBuilderDelegate((c, i) {
-                  final p = _playlists[i];
-                  return GestureDetector(
-                    onTap: () {
-                      Navigator.of(context).push(MaterialPageRoute(
-                        builder: (_) => PlaylistDetailPage(playlist: p),
-                      ));
-                    },
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Expanded(
-                          child: LayoutBuilder(builder: (c, constraints) {
-                            final size = constraints.maxWidth;
-                            return Stack(
-                              children: [
-                                Positioned.fill(
-                                  child: JXCover(
-                                      url: p.coverUrl,
-                                      size: size,
-                                      radius: 18,
-                                      gradientIndex: i),
-                                ),
-                                Positioned(
-                                  left: 10,
-                                  bottom: 10,
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 9, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: Colors.black
-                                          .withValues(alpha: 0.35),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Text(
-                                      '${_platformShort(p.platform)}'
-                                      '${p.songCount > 0 ? ' · ${p.songCount} 首' : ' · 推荐'}',
-                                      style: const TextStyle(
-                                          fontSize: 10,
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w600),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            );
-                          }),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          p.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 13, fontWeight: FontWeight.w500),
-                        ),
-                      ],
-                    ),
-                  );
-                }, childCount: _playlists.length),
+          // 分平台推荐歌单（三平台各自展示；「换一批」翻页，回首页超 60s 自动刷新）
+          for (final platform in const [0, 1, 2]) ...[
+            SliverToBoxAdapter(
+              child: JXSectionHeader(
+                title: '${JXPlatform.name(platform)} · 推荐歌单',
+                onMore: () => _load(nextBatch: true),
               ),
             ),
-          // 热门单曲
+            SliverToBoxAdapter(
+              child: JXPlaylistRow(
+                playlists: _playlistsByPlatform[platform] ?? const [],
+                cardWidth: 176,
+                onTap: _openPlaylist,
+              ),
+            ),
+          ],          // 热门单曲
           SliverToBoxAdapter(
             child: JXSectionHeader(title: '热门单曲', onMore: _load),
           ),
@@ -272,56 +252,22 @@ class _HomePageState extends ConsumerState<HomePage> {
               child: JXBanner(compact: true, onPlay: () => _playTop()),
             ),
           ),
-          // 推荐歌单：横滑卡片（宽度随屏宽缩放）
-          SliverToBoxAdapter(
-            child: JXSectionHeader(
-                title: '推荐歌单', paddingLeft: 16, onMore: _load),
-          ),
-          if (_playlists.isEmpty)
-            SliverToBoxAdapter(child: const SizedBox(height: 40))
-          else
+          // 分平台推荐歌单（横滑卡片，宽度随屏宽缩放；「换一批」翻页）
+          for (final platform in const [0, 1, 2]) ...[
             SliverToBoxAdapter(
-              child: SizedBox(
-                height: cardW + 30,
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _playlists.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 10),
-                  itemBuilder: (context, i) {
-                    final p = _playlists[i];
-                    return GestureDetector(
-                      onTap: () {
-                        Navigator.of(context).push(MaterialPageRoute(
-                          builder: (_) => PlaylistDetailPage(playlist: p),
-                        ));
-                      },
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          JXCover(
-                              url: p.coverUrl,
-                              size: cardW,
-                              radius: 18,
-                              gradientIndex: i),
-                          const SizedBox(height: 6),
-                          SizedBox(
-                            width: cardW,
-                            child: Text(
-                              p.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+              child: JXSectionHeader(
+                  title: '${JXPlatform.name(platform)} · 推荐歌单',
+                  paddingLeft: 16,
+                  onMore: () => _load(nextBatch: true)),
+            ),
+            SliverToBoxAdapter(
+              child: JXPlaylistRow(
+                playlists: _playlistsByPlatform[platform] ?? const [],
+                cardWidth: cardW,
+                onTap: _openPlaylist,
               ),
             ),
-          // 热歌榜
+          ],          // 热歌榜
           SliverToBoxAdapter(
             child: JXSectionHeader(
                 title: '热歌榜', paddingLeft: 16, onMore: _load),
@@ -382,9 +328,8 @@ class _HomePageState extends ConsumerState<HomePage> {
     final ok = await resolveAndPlay(ref, song);
     if (ok || !mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(song.vip
-          ? '「${song.title}」为 VIP 歌曲，请先登录对应平台后播放'
-          : '获取「${song.title}」播放链接失败，请重试'),
+      content: Text(
+          '「${song.title}」暂时无法播放：三个平台都没有可用的免费版本，可能需要登录对应平台或受版权限制'),
     ));
   }
 }
@@ -568,16 +513,3 @@ class _RankCard extends StatelessWidget {
   }
 }
 
-/// 歌单卡片上的平台短名
-String _platformShort(int platform) {
-  switch (platform) {
-    case JXPlatform.netease:
-      return '网易云';
-    case JXPlatform.kugou:
-      return '酷狗';
-    case JXPlatform.qq:
-      return 'QQ音乐';
-    default:
-      return '本地';
-  }
-}

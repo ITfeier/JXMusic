@@ -18,6 +18,9 @@ class QQMusicApi implements MusicPlatformApi {
       'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg';
   static const String _playlist =
       'https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg';
+  /// 歌单广场（最热歌单）：categoryId=10000000 全部、sortId=5 最热
+  static const String _dissByTag =
+      'https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg';
 
   String _guid = '';
 
@@ -250,8 +253,39 @@ class QQMusicApi implements MusicPlatformApi {
   @override
   Future<List<Playlist>> recommendPlaylists(
       {int page = 1, int size = 20}) async {
-    // QQ 歌单发现接口需登录态，返回空（后续补充）
-    return const [];
+    // 歌单广场（按最热排序）：categoryId=10000000 全部、sortId=5 最热。
+    // 2026-11 实测公开可用，无需登录。
+    try {
+      final start = (page - 1) * size;
+      final resp = await JXHttp.dio.get(_dissByTag,
+          queryParameters: {
+            'categoryId': 10000000,
+            'sortId': 5,
+            'sin': start,
+            'ein': start + size - 1,
+            'format': 'json',
+            'rnd': DateTime.now().millisecondsSinceEpoch,
+          },
+          options: Options(headers: {'Referer': 'https://y.qq.com/'}));
+      final raw = resp.data;
+      final dataMap = raw is Map ? raw['data'] : null;
+      final list =
+          (dataMap is Map ? dataMap['list'] as List? : null) ?? const [];
+      return list.map<Playlist>((raw) {
+        final m = raw as Map;
+        final creator = m['creator'] as Map?;
+        return Playlist(
+          id: '${m['dissid'] ?? ''}',
+          platform: platform,
+          title: (m['dissname'] as String? ?? '').trim(),
+          coverUrl: jxNormalizeImageUrl(m['imgurl'] as String?),
+          creator: creator?['name'] as String? ?? '',
+          songCount: 0,
+        );
+      }).where((p) => p.id.isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
   }
 
   @override
