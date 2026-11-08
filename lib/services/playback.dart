@@ -19,6 +19,7 @@ Future<bool> resolveAndPlay(
   Song song, {
   List<Song>? queue,
   List<Song>? sources,
+  bool allowCrossPlatformFallback = true,
 }) async {
   final player = ref.read(playerServiceProvider);
   if (song.platform == JXPlatform.local) {
@@ -38,8 +39,10 @@ Future<bool> resolveAndPlay(
     }
   }
 
-  // 本平台不可播 → 跨平台找免费替代（原始歌曲是 VIP / 版权限制时最常见）
-  if (url == null || url.isEmpty) {
+  // 本平台不可播 → 跨平台找免费替代（原始歌曲是 VIP / 版权限制时最常见）。
+  // 由用户明确点了某个音源/某首歌时（allowCrossPlatformFallback=false）不做静默替代，
+  // 保证"播的就是你点的那一首、那个平台"。
+  if ((url == null || url.isEmpty) && allowCrossPlatformFallback) {
     final alt = await findAlternativeSong(hub, song,
         skipPlatform: song.platform);
     if (alt == null) return false;
@@ -66,17 +69,45 @@ Future<bool> resolveAndPlay(
   return true;
 }
 
-/// 播放聚合曲目：按「非 VIP 优先」依次尝试各平台音源，成功即播放。
-Future<bool> playTrackGroup(WidgetRef ref, List<Song> sources) async {
+/// 播放聚合曲目：先试「首选音源」（与列表里标注的一致），失败再依次试其它平台音源。
+/// 不做跨平台"换一首同名歌"的静默替代，失败就返回 false 由 UI 明确提示。
+Future<bool> playTrackGroup(
+  WidgetRef ref,
+  List<Song> sources, {
+  Song? preferred,
+}) async {
   if (sources.isEmpty) return false;
-  final ordered = [...sources]
-    ..sort((a, b) => (a.vip ? 1 : 0).compareTo(b.vip ? 1 : 0));
+  final first = preferred ?? sources.first;
+  final ordered = <Song>[
+    first,
+    for (final s in sources)
+      if (s.globalId != first.globalId) s,
+  ];
   for (final source in ordered) {
-    if (await resolveAndPlay(ref, source, sources: ordered)) {
+    if (await resolveAndPlay(
+      ref,
+      source,
+      sources: sources,
+      allowCrossPlatformFallback: false,
+    )) {
       return true;
     }
   }
   return false;
+}
+
+/// 直接播放指定平台的音源（用户点列表里的平台标签时用）。
+Future<bool> playSingleSource(
+  WidgetRef ref,
+  Song source, {
+  List<Song>? sources,
+}) {
+  return resolveAndPlay(
+    ref,
+    source,
+    sources: sources ?? <Song>[source],
+    allowCrossPlatformFallback: false,
+  );
 }
 
 /// 播放中切换音源：保持当前播放进度。
@@ -88,6 +119,7 @@ Future<bool> switchSource(WidgetRef ref, Song source) async {
     ref,
     source,
     sources: sources.isEmpty ? <Song>[source] : sources,
+    allowCrossPlatformFallback: false,
   );
   if (ok && position > Duration.zero) {
     await player.seek(position);

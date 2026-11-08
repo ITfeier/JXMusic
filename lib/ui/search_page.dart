@@ -73,11 +73,27 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     });
   }
 
-  Future<void> _play(TrackGroup group) async {
-    final ok = await playTrackGroup(ref, group.sources);
-    if (ok || !mounted) return;
+  /// 播放：默认用列表里标「首选」的音源；点了某个平台标签则用该平台。
+  Future<void> _play(TrackGroup group, {Song? preferred}) async {
+    final target = preferred ?? group.primary;
+    final ok = await playTrackGroup(ref, group.sources, preferred: target);
+    if (!mounted) return;
+    if (ok) {
+      // 首选音源解析失败时可能已自动换到本曲目的其它平台音源，明确告知用户
+      final actual = ref.read(playerServiceProvider).currentSong;
+      if (actual != null &&
+          actual.globalId != target.globalId &&
+          actual.platform != target.platform) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('已改用 ${JXPlatform.name(actual.platform)} 音源播放'),
+        ));
+      }
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('「${group.title}」暂时无法播放：三个平台都没有可用音源，可能需要登录或受版权限制'),
+      content: Text('「${group.title}」暂时无法播放：'
+          '${JXPlatform.name(target.platform)} 音源不可用'
+          '${group.hasMultipleSources ? '，可点其它平台标签再试' : ''}'),
     ));
   }
 
@@ -174,6 +190,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
                               group: g,
                               index: i,
                               onTap: () => _play(g),
+                              onPlaySource: (source) =>
+                                  _play(g, preferred: source),
                             );
                           },
                         ),
@@ -183,16 +201,18 @@ class _SearchPageState extends ConsumerState<SearchPage> {
   }
 }
 
-/// 搜索结果行：一首歌一行，右侧列出该曲目在哪些平台有音源
+/// 搜索结果行：一首歌一行；音源标签标出「首选」，点标签可直接用该平台播放
 class _TrackGroupRow extends StatelessWidget {
   final TrackGroup group;
   final int index;
   final VoidCallback onTap;
+  final void Function(Song source) onPlaySource;
 
   const _TrackGroupRow({
     required this.group,
     required this.index,
     required this.onTap,
+    required this.onPlaySource,
   });
 
   @override
@@ -261,12 +281,16 @@ class _TrackGroupRow extends StatelessWidget {
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 const SizedBox(height: 5),
-                Row(
+                Wrap(
+                  spacing: 5,
+                  runSpacing: 4,
                   children: [
-                    for (final s in group.orderedSources) ...[
-                      _SourceChip(platform: s.platform, vip: s.vip),
-                      const SizedBox(width: 5),
-                    ],
+                    for (final s in group.orderedSources)
+                      _SourceChip(
+                        source: s,
+                        selected: s.globalId == group.primary.globalId,
+                        onTap: () => onPlaySource(s),
+                      ),
                   ],
                 ),
               ],
@@ -285,12 +309,17 @@ class _TrackGroupRow extends StatelessWidget {
   }
 }
 
-/// 音源平台小标签（如 ●网易云）
+/// 音源平台小标签：「首选·XX」表示点整行时播放的就是这个平台；点标签可直接切平台
 class _SourceChip extends StatelessWidget {
-  final int platform;
-  final bool vip;
+  final Song source;
+  final bool selected;
+  final VoidCallback onTap;
 
-  const _SourceChip({required this.platform, required this.vip});
+  const _SourceChip({
+    required this.source,
+    required this.selected,
+    required this.onTap,
+  });
 
   static String shortName(int platform) {
     switch (platform) {
@@ -307,28 +336,51 @@ class _SourceChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = JXPlatform.color(platform);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 5,
-            height: 5,
-            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    final color = JXPlatform.color(source.platform);
+    final label =
+        '${selected ? '首选·' : ''}${shortName(source.platform)}';
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: selected ? 0.22 : 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color:
+                selected ? color.withValues(alpha: 0.7) : Colors.transparent,
           ),
-          const SizedBox(width: 3),
-          Text(
-            shortName(platform),
-            style: TextStyle(
-                fontSize: 9.5, color: color, fontWeight: FontWeight.w600),
-          ),
-        ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 5,
+              height: 5,
+              decoration:
+                  BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 3),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 9.5,
+                color: selected ? color : color.withValues(alpha: 0.85),
+                fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+              ),
+            ),
+            if (source.vip) ...[
+              const SizedBox(width: 3),
+              const Text(
+                'VIP',
+                style: TextStyle(
+                    fontSize: 8,
+                    color: JXColors.accentPink,
+                    fontWeight: FontWeight.w700),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
