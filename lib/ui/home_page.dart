@@ -21,7 +21,9 @@ class HomePage extends ConsumerStatefulWidget {
 }
 
 class _HomePageState extends ConsumerState<HomePage> {
-  bool _loading = true;
+  // 初值必须是 false：initState 里的 _load() 会被 `else if (_loading) return;`
+  // 守卫拦住，若初值为 true 则首次加载永远不发起（0.9.3 引入的首页永久转圈 bug）。
+  bool _loading = false;
   final Map<int, List<Song>> _tops = {};
 
   /// 分平台推荐歌单：0=QQ、1=网易云、2=酷狗
