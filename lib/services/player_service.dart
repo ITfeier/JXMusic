@@ -4,8 +4,31 @@ import 'package:media_kit/media_kit.dart';
 import '../models/song.dart';
 import '../models/lyric.dart';
 
+/// 切换音源时替换当前队列项（纯函数，便于单测）。
+///
+/// 返回新队列与新索引：长度不变、[currentIndex] 位置被 [song] 替换，其它元素原样保留；
+/// [currentIndex] 越界时返回原队列的等长副本、索引不变。**不修改入参队列**。
+///
+/// 注意：调用方必须先把结果算好、再整体替换内部队列（不要写成
+/// `queue..clear()..addAll(replace(queue, ...))`——级联会先 clear，再对已清空的
+/// 队列求值，导致队列被清空，见 test/source_switch_test.dart 的回归用例）。
+({List<Song> queue, int index}) replaceCurrentInQueue({
+  required List<Song> queue,
+  required int currentIndex,
+  required Song song,
+}) {
+  final next = List<Song>.of(queue);
+  if (currentIndex < 0 || currentIndex >= next.length) {
+    return (queue: next, index: currentIndex);
+  }
+  next[currentIndex] = song;
+  return (queue: next, index: currentIndex);
+}
+
 /// 播放器服务：基于 media_kit (libmpv)，Windows/Android 双端
 class PlayerService extends ChangeNotifier {
+  /// [initPlayer] 仅测试用：false 时不创建 media_kit Player，
+  /// 便于在不加载原生库的测试环境验证队列/切源逻辑；业务代码保持默认 true。
   PlayerService({
     this.onSongStarted,
     this.urlResolver,
@@ -14,11 +37,12 @@ class PlayerService extends ChangeNotifier {
     double initialVolume = 80,
     int initialLoopMode = 2,
     double initialSpeed = 1.0,
+    bool initPlayer = true,
   }) {
     _volume = initialVolume;
     _loopMode = initialLoopMode;
     _speed = initialSpeed;
-    _init();
+    if (initPlayer) _init();
   }
 
   /// 一首歌真正开始播放时回调（用于记录播放历史）
@@ -172,17 +196,37 @@ class PlayerService extends ChangeNotifier {
 
   /// 播放单曲：若在队列中则定位，否则替换队列。
   /// [sources] 传入该曲目在其它平台的音源，用于播放页「切换音源」。
+  /// [replaceCurrent] 为 true 时用于切源：只替换当前队列项
+  /// （[replaceCurrentInQueue]），队列长度与 [currentIndex] 保持不变；
+  /// 当前位置越界时退回原有队列逻辑。
   Future<void> playSong(Song song,
-      {List<Song>? queue, List<Song>? sources}) async {
+      {List<Song>? queue,
+      List<Song>? sources,
+      bool replaceCurrent = false}) async {
     if (sources != null && sources.isNotEmpty) {
       _sourcesBySong[song.globalId] = List<Song>.unmodifiable(sources);
     }
-    if (queue != null) {
+    if (replaceCurrent &&
+        _currentIndex >= 0 &&
+        _currentIndex < _queue.length) {
+      // 先算好替换结果，再整体替换内部队列：级联 `..clear()..addAll(f(_queue))`
+      // 会先 clear 再对已清空的 _queue 求值，历史 bug（队列被清空）。
+      final replaced = replaceCurrentInQueue(
+        queue: _queue,
+        currentIndex: _currentIndex,
+        song: song,
+      );
       _queue
         ..clear()
-        ..addAll(queue);
-      final idx = _queue.indexWhere(
-          (s) => s.globalId == song.globalId);
+        ..addAll(replaced.queue);
+      _currentIndex = replaced.index;
+    } else if (queue != null) {
+      // 同样先对入参求值，再替换内部队列，避免对正在被清空的集合求值。
+      final next = List<Song>.of(queue);
+      final idx = next.indexWhere((s) => s.globalId == song.globalId);
+      _queue
+        ..clear()
+        ..addAll(next);
       _currentIndex = idx >= 0 ? idx : 0;
     } else {
       final idx =

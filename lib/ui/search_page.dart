@@ -90,10 +90,10 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       }
       return;
     }
+    final tried = group.sources.length;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('「${group.title}」暂时无法播放：'
-          '${JXPlatform.name(target.platform)} 音源不可用'
-          '${group.hasMultipleSources ? '，可点其它平台标签再试' : ''}'),
+      content: Text('「${group.title}」已尝试全部 $tried 个音源，均不可用'
+          '（可能需要登录或受版权限制）'),
     ));
   }
 

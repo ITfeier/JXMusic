@@ -139,50 +139,6 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                 ),
               ),
 
-              // 音源切换：同一首歌在多个平台都有音源时，横向列出可切换
-              if (player.currentSources.length > 1)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
-                  child: Row(
-                    children: [
-                      Icon(Icons.swap_horiz_rounded,
-                          size: 16, color: textSub),
-                      const SizedBox(width: 4),
-                      Text('音源',
-                          style: TextStyle(fontSize: 11, color: textSub)),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              for (final s in player.orderedSources)
-                                Padding(
-                                  padding: const EdgeInsets.only(right: 6),
-                                  child: _SourceButton(
-                                    song: s,
-                                    selected: s.globalId == song.globalId,
-                                    onTap: () async {
-                                      if (s.globalId == song.globalId) return;
-                                      final ok = await switchSource(ref, s);
-                                      if (!ok && context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(SnackBar(
-                                          content: Text(
-                                              '${JXPlatform.name(s.platform)} 音源暂时不可用'),
-                                        ));
-                                      }
-                                    },
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
               // 主体
               Expanded(
                 child: AnimatedSwitcher(
@@ -210,6 +166,19 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                 padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
                 child: Column(
                   children: [
+                    // 音源切换二级按钮：仅同一首歌存在多个平台音源时显示，
+                    // 点击弹出「选择音源」面板（替代原先标题下方的横向音源条）。
+                    if (player.currentSources.length > 1)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Padding(
+                          padding: const EdgeInsets.only(bottom: 2),
+                          child: _SourceSwitchButton(
+                            label: '音源 · ${JXPlatform.name(song.platform)}',
+                            onTap: _showSourceSheet,
+                          ),
+                        ),
+                      ),
                     // 进度条
                     Row(
                       children: [
@@ -427,6 +396,21 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
       case 'add_to_playlist':
         await _addToPlaylist(song);
     }
+  }
+
+  /// 音源切换二级按钮：弹出「选择音源」面板；切换成功关闭面板并提示。
+  Future<void> _showSourceSheet() async {
+    final player = ref.read(playerServiceProvider);
+    if (player.currentSong == null) return;
+    final switched = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _SourceSheet(),
+    );
+    if (switched != true || !mounted) return;
+    final actual = ref.read(playerServiceProvider).currentSong;
+    if (actual == null) return;
+    _toast('已切换到 ${JXPlatform.name(actual.platform)} 音源');
   }
 
   void _toggleFavorite(Song song) {
@@ -1058,73 +1042,268 @@ class _QueueSheet extends ConsumerWidget {
   }
 }
 
-/// 播放页音源切换按钮（QQ/网易云/酷狗）
-class _SourceButton extends StatelessWidget {
-  final Song song;
-  final bool selected;
+/// 音源切换二级按钮（控制区、进度条上方右侧）：
+/// swap 图标 + 「音源 · 当前平台」+ 展开箭头，点击弹出音源选择面板。
+class _SourceSwitchButton extends StatelessWidget {
+  final String label;
   final VoidCallback onTap;
 
-  const _SourceButton({
-    required this.song,
-    required this.selected,
-    required this.onTap,
-  });
+  const _SourceSwitchButton({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final color = JXPlatform.color(song.platform);
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textSub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
     return GestureDetector(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 26,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: selected
-              ? color.withValues(alpha: 0.22)
-              : (isDark ? JXColors.glassDark : JXColors.glassLight)
-                  .withValues(alpha: 0.5),
-          borderRadius: BorderRadius.circular(14),
+          color: (isDark ? JXColors.glassDark : JXColors.glassLight)
+              .withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(13),
           border: Border.all(
-            color: selected
-                ? color
-                : (isDark
-                    ? JXColors.glassStrokeDark
-                    : JXColors.glassStrokeLight),
+            color: isDark
+                ? JXColors.glassStrokeDark
+                : JXColors.glassStrokeLight,
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 6,
-              height: 6,
-              decoration:
-                  BoxDecoration(color: color, shape: BoxShape.circle),
-            ),
-            const SizedBox(width: 5),
-            Text(
-              JXPlatform.name(song.platform),
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight:
-                    selected ? FontWeight.w700 : FontWeight.w400,
-                color: selected ? color : null,
-              ),
-            ),
-            if (song.vip) ...[
-              const SizedBox(width: 4),
-              const Text(
-                'VIP',
+            const Icon(Icons.swap_horiz_rounded,
+                size: 14, color: JXColors.primary),
+            const SizedBox(width: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 150),
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                    fontSize: 8.5,
-                    color: JXColors.accentPink,
-                    fontWeight: FontWeight.w700),
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  color: textSub,
+                ),
               ),
-            ],
+            ),
+            const Icon(Icons.expand_less_rounded,
+                size: 14, color: JXColors.primary),
           ],
         ),
       ),
     );
   }
 }
+
+/// 「选择音源」底部面板：
+/// - 当前音源行不可点；VIP 音源标 `VIP`，未登录且为 VIP 时额外标「需登录」；
+/// - 切换中禁用整表并显示 loading；
+/// - 切换成功关闭面板（返回 true），失败留在面板内并在对应行展示原因。
+class _SourceSheet extends ConsumerStatefulWidget {
+  const _SourceSheet();
+
+  @override
+  ConsumerState<_SourceSheet> createState() => _SourceSheetState();
+}
+
+class _SourceSheetState extends ConsumerState<_SourceSheet> {
+  bool _switching = false;
+  String? _error;
+  String? _errorFor;
+
+  Future<void> _switch(Song source) async {
+    if (_switching) return;
+    final player = ref.read(playerServiceProvider);
+    if (!canSwitchToSource(source, player.currentSong)) return;
+    setState(() {
+      _switching = true;
+      _error = null;
+      _errorFor = null;
+    });
+    var succeeded = false;
+    String? message;
+    try {
+      final result = await switchSource(ref, source);
+      if (!mounted) return; // 面板已被用户关闭：不再更新 UI
+      if (result.ok) {
+        succeeded = true;
+        Navigator.of(context).pop(true);
+        return;
+      }
+      message = result.error ?? '切换音源失败';
+    } catch (e) {
+      // 任意异常都要复位“切换中”，否则面板会一直卡 loading。
+      message = '切换音源失败：$e';
+    } finally {
+      if (mounted && !succeeded) {
+        final text = message ?? '切换音源失败';
+        setState(() {
+          _switching = false;
+          _error = text;
+          _errorFor = source.globalId;
+        });
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(text)));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final player = ref.watch(playerServiceProvider);
+    final current = player.currentSong;
+    final sources = player.orderedSources;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textSub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: GlassCard(
+          borderRadius: BorderRadius.circular(24),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(top: 6, bottom: 2),
+                child: Text('选择音源',
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              ),
+              if (current != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    '当前：${current.displayPlatform} · 切换后保留播放进度',
+                    style: TextStyle(fontSize: 11, color: textSub),
+                  ),
+                ),
+              if (_switching)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(20, 8, 20, 4),
+                  child: LinearProgressIndicator(
+                    minHeight: 2,
+                    color: JXColors.primary,
+                    backgroundColor: Colors.transparent,
+                  ),
+                ),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final s in sources)
+                      _SourceTile(
+                        source: s,
+                        current:
+                            current != null && s.globalId == current.globalId,
+                        loggedIn:
+                            ref.watch(accountProvider(s.platform)) != null,
+                        switching: _switching,
+                        error: _errorFor == s.globalId ? _error : null,
+                        onTap: () => _switch(s),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 音源面板中的一行：平台色点 + 平台名 + 当前/VIP/（VIP 且未登录）需登录标记 + 失败原因
+class _SourceTile extends StatelessWidget {
+  final Song source;
+  final bool current;
+  final bool loggedIn;
+  final bool switching;
+  final String? error;
+  final VoidCallback onTap;
+
+  const _SourceTile({
+    required this.source,
+    required this.current,
+    required this.loggedIn,
+    required this.switching,
+    required this.error,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textSub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+    final color = JXPlatform.color(source.platform);
+    final enabled = !current && !switching;
+    return ListTile(
+      enabled: enabled,
+      onTap: enabled ? onTap : null,
+      dense: true,
+      leading: SizedBox(
+        width: 18,
+        child: Center(
+          child: Container(
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+        ),
+      ),
+      title: Wrap(
+        spacing: 6,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Text(
+            JXPlatform.name(source.platform),
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: current ? FontWeight.w700 : FontWeight.w400,
+              color: current ? color : null,
+            ),
+          ),
+          if (current) _sourceBadge('当前 · 播放中', JXColors.primary),
+          if (source.vip) _sourceBadge('VIP', JXColors.accentPink),
+          // 「需登录」只标在 VIP 音源上：免费音源未登录也能播，避免误导。
+          if (!loggedIn && source.vip) _sourceBadge('需登录', textSub),
+        ],
+      ),
+      subtitle: error == null
+          ? null
+          : Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                error!,
+                style: const TextStyle(
+                    fontSize: 11.5, color: JXColors.accentPink),
+              ),
+            ),
+      trailing: current
+          ? const Icon(Icons.graphic_eq_rounded,
+              size: 16, color: JXColors.primary)
+          : null,
+    );
+  }
+}
+
+Widget _sourceBadge(String text, Color color) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+            fontSize: 9.5, color: color, fontWeight: FontWeight.w700),
+      ),
+    );
