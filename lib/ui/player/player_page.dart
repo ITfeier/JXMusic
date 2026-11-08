@@ -236,122 +236,162 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                       ],
                     ),
                     const SizedBox(height: 8),
-                    // 控制按钮
+                    // 控制按钮：左右两侧等宽均分，保证主播放键始终水平居中、各按钮垂直居中对齐
                     Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        GlassIconButton(
-                          icon: player.loopMode == 3
-                              ? Icons.shuffle_rounded
-                              : player.loopMode == 1
-                                  ? Icons.repeat_one_rounded
-                                  : Icons.repeat_rounded,
-                          size: 40,
-                          color: player.loopMode != 2
-                              ? JXColors.primary
-                              : null,
-                          onPressed: () => _cycleLoop(player),
-                        ),
-                        const SizedBox(width: 24),
-                        GlassIconButton(
-                          icon: Icons.skip_previous_rounded,
-                          size: 48,
-                          onPressed: () => player.previous(),
-                        ),
-                        const SizedBox(width: 24),
-                        // 主播放键
-                        GestureDetector(
-                          onTap: () => player.toggle(),
-                          child: Container(
-                            width: 72,
-                            height: 72,
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [JXColors.primary, JXColors.accent],
-                              ),
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: JXColors.primary
-                                      .withValues(alpha: 0.45),
-                                  blurRadius: 24,
-                                  offset: const Offset(0, 8),
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              player.playing
-                                  ? Icons.pause_rounded
-                                  : Icons.play_arrow_rounded,
-                              color: Colors.white,
-                              size: 42,
+                        Expanded(
+                          child: Center(
+                            child: GlassIconButton(
+                              icon: player.loopMode == 3
+                                  ? Icons.shuffle_rounded
+                                  : player.loopMode == 1
+                                      ? Icons.repeat_one_rounded
+                                      : Icons.repeat_rounded,
+                              size: 40,
+                              color: player.loopMode != 2
+                                  ? JXColors.primary
+                                  : null,
+                              onPressed: () => _cycleLoop(player),
                             ),
                           ),
                         ),
-                        const SizedBox(width: 24),
-                        GlassIconButton(
-                          icon: Icons.skip_next_rounded,
-                          size: 48,
-                          onPressed: () => player.next(),
+                        Expanded(
+                          child: Center(
+                            child: GlassIconButton(
+                              icon: Icons.skip_previous_rounded,
+                              size: 46,
+                              onPressed: () => player.previous(),
+                            ),
+                          ),
                         ),
-                        const SizedBox(width: 24),
-                        GlassIconButton(
-                          icon: _showLyrics
-                              ? Icons.album_rounded
-                              : Icons.lyrics_rounded,
-                          size: 40,
-                          color: _showLyrics ? JXColors.primary : null,
-                          onPressed: () {
-                            setState(() => _showLyrics = !_showLyrics);
-                          },
+                        // 主播放键（固定宽度，居中）
+                        SizedBox(
+                          width: 84,
+                          child: Center(
+                            child: GestureDetector(
+                              onTap: () => player.toggle(),
+                              child: Container(
+                                width: 72,
+                                height: 72,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [
+                                      JXColors.primary,
+                                      JXColors.accent
+                                    ],
+                                  ),
+                                  shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: JXColors.primary
+                                          .withValues(alpha: 0.45),
+                                      blurRadius: 24,
+                                      offset: const Offset(0, 8),
+                                    ),
+                                  ],
+                                ),
+                                child: Icon(
+                                  player.playing
+                                      ? Icons.pause_rounded
+                                      : Icons.play_arrow_rounded,
+                                  color: Colors.white,
+                                  size: 42,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: GlassIconButton(
+                              icon: Icons.skip_next_rounded,
+                              size: 46,
+                              onPressed: () => player.next(),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: Center(
+                            child: GlassIconButton(
+                              icon: _showLyrics
+                                  ? Icons.album_rounded
+                                  : Icons.lyrics_rounded,
+                              size: 40,
+                              color: _showLyrics ? JXColors.primary : null,
+                              onPressed: () {
+                                setState(() => _showLyrics = !_showLyrics);
+                              },
+                            ),
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 14),
-                    // 音量 + 倍速
-                    Row(
-                      children: [
-                        GestureDetector(
-                          onTap: player.toggleMute,
-                          child: Icon(
-                            player.muted
-                                ? Icons.volume_off_rounded
-                                : Icons.volume_down_rounded,
-                            size: 18,
-                            color: player.muted
-                                ? JXColors.accentPink
-                                : textSub,
+                    // 音量 + 倍速（图标定宽居中，滑块与倍速按钮垂直对齐）
+                    SizedBox(
+                      height: 32,
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 24,
+                            child: GestureDetector(
+                              onTap: player.toggleMute,
+                              behavior: HitTestBehavior.opaque,
+                              child: Icon(
+                                player.muted
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_down_rounded,
+                                size: 18,
+                                color: player.muted
+                                    ? JXColors.accentPink
+                                    : textSub,
+                              ),
+                            ),
                           ),
-                        ),
-                        Expanded(
-                          child: Slider(
-                            value: player.muted ? 0 : player.volume,
-                            max: 100,
-                            activeColor: JXColors.primary,
-                            inactiveColor: Colors.grey.withValues(alpha: 0.2),
-                            onChanged: (v) => player.setVolume(v),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderThemeData(
+                                trackHeight: 3,
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 6),
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 13),
+                              ),
+                              child: Slider(
+                                value: player.muted ? 0 : player.volume,
+                                max: 100,
+                                activeColor: JXColors.primary,
+                                inactiveColor:
+                                    Colors.grey.withValues(alpha: 0.2),
+                                onChanged: (v) => player.setVolume(v),
+                              ),
+                            ),
                           ),
-                        ),
-                        GestureDetector(
-                          onTap: player.toggleMute,
-                          child: Icon(
-                            player.muted
-                                ? Icons.volume_off_rounded
-                                : Icons.volume_up_rounded,
-                            size: 18,
-                            color: player.muted
-                                ? JXColors.accentPink
-                                : textSub,
+                          SizedBox(
+                            width: 24,
+                            child: GestureDetector(
+                              onTap: player.toggleMute,
+                              behavior: HitTestBehavior.opaque,
+                              child: Icon(
+                                player.muted
+                                    ? Icons.volume_off_rounded
+                                    : Icons.volume_up_rounded,
+                                size: 18,
+                                color: player.muted
+                                    ? JXColors.accentPink
+                                    : textSub,
+                              ),
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 10),
-                        _SpeedButton(
-                          speed: player.speed,
-                          onChanged: player.setSpeed,
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          _SpeedButton(
+                            speed: player.speed,
+                            onChanged: player.setSpeed,
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -911,7 +951,9 @@ class _SpeedButton extends StatelessWidget {
           PopupMenuItem(value: v, child: Text(jxFormatSpeed(v))),
       ],
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        alignment: Alignment.center,
         decoration: BoxDecoration(
           color: (isDark ? JXColors.glassDark : JXColors.glassLight)
               .withValues(alpha: 0.6),
@@ -927,6 +969,7 @@ class _SpeedButton extends StatelessWidget {
           style: TextStyle(
             fontSize: 11.5,
             fontWeight: FontWeight.w600,
+            height: 1.1,
             color: speed == 1.0 ? null : JXColors.primary,
           ),
         ),

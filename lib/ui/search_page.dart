@@ -110,30 +110,43 @@ class _SearchPageState extends ConsumerState<SearchPage> {
           child: GlassCard(
             borderRadius: BorderRadius.circular(30),
             padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextField(
-              controller: _controller,
-              textInputAction: TextInputAction.search,
-              onSubmitted: _search,
-              decoration: InputDecoration(
-                border: InputBorder.none,
-                hintText: '搜索歌曲 / 歌手（三平台合并去重，最多 100 首）',
-                hintStyle: const TextStyle(fontSize: 14),
-                prefixIcon: const Icon(Icons.search_rounded,
-                    size: 22, color: JXColors.primary),
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.clear_rounded, size: 20),
-                  onPressed: () {
-                    _controller.clear();
-                    setState(() {
-                      _searched = false;
-                      _groups = const [];
-                      _rawCount = 0;
-                      _error = null;
-                    });
-                  },
+            child: SizedBox(
+              height: 46,
+              child: TextField(
+                controller: _controller,
+                textInputAction: TextInputAction.search,
+                onSubmitted: _search,
+                textAlignVertical: TextAlignVertical.center,
+                decoration: InputDecoration(
+                  isDense: true,
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                  hintText: '搜索歌曲 / 歌手（三平台合并去重，最多 100 首）',
+                  hintStyle: const TextStyle(fontSize: 14, height: 1.2),
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      size: 22, color: JXColors.primary),
+                  prefixIconConstraints:
+                      const BoxConstraints(minWidth: 34, minHeight: 34),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.clear_rounded, size: 20),
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints(minWidth: 34, minHeight: 34),
+                    onPressed: () {
+                      _controller.clear();
+                      setState(() {
+                        _searched = false;
+                        _groups = const [];
+                        _rawCount = 0;
+                        _error = null;
+                      });
+                    },
+                  ),
+                  suffixIconConstraints:
+                      const BoxConstraints(minWidth: 34, minHeight: 34),
                 ),
+                style: const TextStyle(fontSize: 14, height: 1.2),
               ),
-              style: const TextStyle(fontSize: 14),
             ),
           ),
         ),
