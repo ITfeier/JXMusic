@@ -27,6 +27,11 @@ class _HomePageState extends ConsumerState<HomePage> {
   bool _loading = false;
   final Map<int, List<Song>> _tops = {};
 
+  /// 热歌榜（手机版）/ 热门单曲（桌面版）是否内联展开：点击「更多 ›」不再
+  /// 重新加载整个首页，而是把该平台已缓存的全部 topSongs 展开显示，按钮变「收起 ›」。
+  bool _rankExpanded = false;
+  bool _hotExpanded = false;
+
   /// 分平台推荐歌单：0=QQ、1=网易云、2=酷狗
   final Map<int, List<Playlist>> _playlistsByPlatform = {};
 
@@ -170,9 +175,13 @@ class _HomePageState extends ConsumerState<HomePage> {
                 onTap: _openPlaylist,
               ),
             ),
-          ],          // 热门单曲
+          ],          // 热门单曲：默认每平台 3 首，点「更多 ›」内联展开全部已加载歌曲
           SliverToBoxAdapter(
-            child: JXSectionHeader(title: '热门单曲', onMore: _load),
+            child: JXSectionHeader(
+              title: '热门单曲',
+              moreText: _hotExpanded ? '收起 ›' : '更多 ›',
+              onMore: () => setState(() => _hotExpanded = !_hotExpanded),
+            ),
           ),
           SliverToBoxAdapter(
             child: Padding(
@@ -180,20 +189,7 @@ class _HomePageState extends ConsumerState<HomePage> {
               child: Column(
                 children: [
                   for (final platform in const [0, 1, 2])
-                    for (var i = 0;
-                        i < (_tops[platform]?.length ?? 0) && i < 3;
-                        i++)
-                      SongRow(
-                        title: _tops[platform]![i].title,
-                        artist: _tops[platform]![i].artist,
-                        tag: JXPlatform.name(platform),
-                        tagColor: JXPlatform.color(platform),
-                        durationText:
-                            jxFormatDuration(_tops[platform]![i].duration),
-                        coverUrl: _tops[platform]![i].coverUrl,
-                        gradientIndex: i,
-                        onTap: () => _resolveAndPlay(_tops[platform]![i]),
-                      ),
+                    ..._hotRows(platform),
                 ],
               ),
             ),
@@ -271,10 +267,14 @@ class _HomePageState extends ConsumerState<HomePage> {
                 onTap: _openPlaylist,
               ),
             ),
-          ],          // 热歌榜
+          ],          // 热歌榜：默认 3/4 行，点「更多 ›」内联展开该平台全部已加载歌曲
           SliverToBoxAdapter(
             child: JXSectionHeader(
-                title: '热歌榜', paddingLeft: 16, onMore: _load),
+                title: '热歌榜',
+                paddingLeft: 16,
+                moreText: _rankExpanded ? '收起 ›' : '更多 ›',
+                onMore: () =>
+                    setState(() => _rankExpanded = !_rankExpanded)),
           ),
           SliverToBoxAdapter(
             child: Padding(
@@ -286,7 +286,8 @@ class _HomePageState extends ConsumerState<HomePage> {
                           platform: plats[0],
                           songs: _tops[plats[0]]!,
                           onPlay: (s) => _resolveAndPlay(s),
-                          maxRows: rankRows,
+                          maxRows:
+                              _rankExpanded ? _tops[plats[0]]!.length : rankRows,
                         )
                       : Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -296,7 +297,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                                 platform: plats[0],
                                 songs: _tops[plats[0]]!,
                                 onPlay: (s) => _resolveAndPlay(s),
-                                maxRows: rankRows,
+                                maxRows: _rankExpanded
+                                    ? _tops[plats[0]]!.length
+                                    : rankRows,
                               ),
                             ),
                             const SizedBox(width: 12),
@@ -305,7 +308,9 @@ class _HomePageState extends ConsumerState<HomePage> {
                                 platform: plats[1],
                                 songs: _tops[plats[1]]!,
                                 onPlay: (s) => _resolveAndPlay(s),
-                                maxRows: rankRows,
+                                maxRows: _rankExpanded
+                                    ? _tops[plats[1]]!.length
+                                    : rankRows,
                               ),
                             ),
                           ],
@@ -316,6 +321,28 @@ class _HomePageState extends ConsumerState<HomePage> {
         ],
       ],
     );
+  }
+
+  /// 桌面版「热门单曲」每个平台的行：默认只显示前 3 首，点「更多 ›」展开后
+  /// 显示该平台已加载的全部 topSongs（来自 _tops 缓存，不重新请求网络）。
+  List<Widget> _hotRows(int platform) {
+    final songs = _tops[platform] ?? const <Song>[];
+    final limit = _hotExpanded
+        ? songs.length
+        : (songs.length > 3 ? 3 : songs.length);
+    return [
+      for (var i = 0; i < limit; i++)
+        SongRow(
+          title: songs[i].title,
+          artist: songs[i].artist,
+          tag: JXPlatform.name(platform),
+          tagColor: JXPlatform.color(platform),
+          durationText: jxFormatDuration(songs[i].duration),
+          coverUrl: songs[i].coverUrl,
+          gradientIndex: i,
+          onTap: () => _resolveAndPlay(songs[i]),
+        ),
+    ];
   }
 
   Future<void> _playTop() async {

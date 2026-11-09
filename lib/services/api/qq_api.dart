@@ -383,8 +383,13 @@ class QQMusicApi implements MusicPlatformApi {
           'param': {'disstid': int.tryParse(playlist.id) ?? 0, 'userinfo': 1}
         }
       };
+      // 必须带 QQ 音乐域名 Referer：JXHttp 全局默认 Referer=https://music.163.com/，
+      // 被 QQ musicu 接口识别为站外来源后返回空 songlist（total_song_num=0），
+      // 真机表现为歌单详情「0 首 + 列表空白」。同一 disstid 实测：
+      // 默认 Referer→0 首；Referer=https://y.qq.com/ → 66 首。
       final resp = await JXHttp.dio.get(_musicu,
-          queryParameters: {'format': 'json', 'data': jsonEncode(req)});
+          queryParameters: {'format': 'json', 'data': jsonEncode(req)},
+          options: Options(headers: {'Referer': 'https://y.qq.com/'}));
       final songList =
           resp.data['playlist']?['data']?['songlist'] as List? ?? const [];
       return songList.map<Song>((s) {

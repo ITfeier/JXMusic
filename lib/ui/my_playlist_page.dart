@@ -7,6 +7,7 @@ import '../providers.dart';
 import '../services/playback.dart';
 import 'dialogs.dart';
 import 'glass.dart';
+import 'player/player_bar.dart';
 
 /// 自建歌单详情页
 class MyPlaylistPage extends ConsumerWidget {
@@ -236,6 +237,9 @@ class MyPlaylistPage extends ConsumerWidget {
                         },
                       ),
               ),
+              // 底部常驻迷你播放条：本页是 Navigator.push 的整页路由，
+              // 会盖住 ShellPage 上的 PlayerBar，所以本页要自带一份。
+              const PlayerBar(),
             ],
           ),
         ),

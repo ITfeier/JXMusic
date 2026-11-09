@@ -6,6 +6,7 @@ import '../models/song.dart';
 import '../providers.dart';
 import '../services/playback.dart';
 import 'glass.dart';
+import 'player/player_bar.dart';
 
 /// 歌单详情页
 class PlaylistDetailPage extends ConsumerStatefulWidget {
@@ -45,6 +46,24 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
       if (mounted) setState(() => _error = '加载失败：$e');
     }
     if (mounted) setState(() => _loading = false);
+  }
+
+  /// 头部副标题：QQ 等平台的歌单广场接口不返回歌曲数（songCount 恒 0），
+  /// 不能直接展示 playlist.songCount；加载完成后按实际已加载首数显示，
+  /// 未加载/失败时显示状态文案，不展示「0 首」这种误导性数字。
+  String get _playlistMeta {
+    final creator = widget.playlist.creator.trim();
+    final String countText;
+    if (_loading) {
+      countText = '加载中…';
+    } else if (_error != null) {
+      countText = '加载失败';
+    } else if (_songs.isEmpty) {
+      countText = '暂无歌曲';
+    } else {
+      countText = '${_songs.length} 首';
+    }
+    return creator.isEmpty ? countText : '$creator · $countText';
   }
 
   Future<void> _playAll() async {
@@ -130,7 +149,7 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
                           ),
                           const SizedBox(height: 6),
                           Text(
-                            '${p.creator} · ${p.songCount} 首',
+                            _playlistMeta,
                             style: TextStyle(fontSize: 12, color: textSub),
                           ),
                           const SizedBox(height: 12),
@@ -157,12 +176,26 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
                         ? Center(
                             child: Padding(
                               padding: const EdgeInsets.all(24),
-                              child: Text(_error!,
-                                  style: const TextStyle(
-                                      color: Colors.redAccent)),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(_error!,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(
+                                          color: Colors.redAccent)),
+                                  const SizedBox(height: 12),
+                                  GlassButton(
+                                    text: '重试',
+                                    icon: Icons.refresh_rounded,
+                                    onPressed: _load,
+                                  ),
+                                ],
+                              ),
                             ),
                           )
-                        : ListView.separated(
+                        : _songs.isEmpty
+                            ? _buildEmptyState(textSub)
+                            : ListView.separated(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
                             itemCount: _songs.length,
                             separatorBuilder: (_, _) =>
@@ -235,8 +268,43 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
                             },
                           ),
               ),
+              // 底部常驻迷你播放条：歌单详情是 Navigator.push 的整页路由，
+              // 会盖住 ShellPage 上的 PlayerBar，所以本页要自带一份。
+              const PlayerBar(),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 空歌单态：明确提示 + 重试（原实现 _songs 为空时正文全空白）
+  Widget _buildEmptyState(Color textSub) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.queue_music_rounded, size: 44, color: textSub),
+            const SizedBox(height: 12),
+            Text(
+              '该歌单暂无歌曲',
+              style: TextStyle(fontSize: 14, color: textSub),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '平台接口可能调整，或该歌单未公开歌曲',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 11, color: textSub),
+            ),
+            const SizedBox(height: 12),
+            GlassButton(
+              text: '重试',
+              icon: Icons.refresh_rounded,
+              onPressed: _load,
+            ),
+          ],
         ),
       ),
     );

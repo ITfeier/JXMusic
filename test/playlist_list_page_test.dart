@@ -8,6 +8,7 @@ import 'package:jxmusic/models/song.dart';
 import 'package:jxmusic/providers.dart';
 import 'package:jxmusic/services/api/http.dart';
 import 'package:jxmusic/services/api/music_api.dart';
+import 'package:jxmusic/services/player_service.dart';
 import 'package:jxmusic/ui/playlist_detail_page.dart';
 import 'package:jxmusic/ui/playlist_list_page.dart';
 
@@ -97,7 +98,13 @@ void _usePhoneSurface(WidgetTester tester) {
 Future<void> _pumpPage(WidgetTester tester, MusicPlatformApi api) async {
   await tester.pumpWidget(
     ProviderScope(
-      overrides: [musicHubProvider.overrideWithValue(_hub(api))],
+      // 详情页底部自带 PlayerBar（修复「整页路由盖住迷你播放条」），
+      // 需要注入不加载 libmpv 的播放器；否则会去读未初始化的 Hive。
+      overrides: [
+        musicHubProvider.overrideWithValue(_hub(api)),
+        playerServiceProvider
+            .overrideWith((ref) => PlayerService(initPlayer: false)),
+      ],
       child: MaterialApp(
         theme: ThemeData.dark(),
         home: const PlaylistListPage(platform: JXPlatform.qq),
