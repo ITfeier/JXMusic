@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+
 import 'core/constants.dart';
 import 'models/lyric.dart';
 import 'models/song.dart';
@@ -10,7 +11,13 @@ import 'services/api/netease_api.dart';
 import 'services/api/qq_api.dart';
 import 'services/api/kugou_api.dart';
 import 'services/library_store.dart';
+import 'services/local_format_service.dart';
+import 'services/local_formats/format_decoder.dart';
+import 'services/local_formats/kgm_decoder.dart';
+import 'services/local_formats/ncm_decoder.dart';
+import 'services/local_formats/qmc_decoder.dart';
 import 'services/local_music.dart';
+import 'services/local_paths.dart';
 import 'services/player_service.dart';
 
 /// 平台登录态在 Hive 里的键（按平台区分）
@@ -32,7 +39,11 @@ AccountSession? _loadAccount(int platform) {
 /// 构造时会把本地保存的登录态灌回各平台客户端，保证重启后登录态仍生效。
 final musicHubProvider = Provider<MusicApiHub>((ref) {
   final hub = MusicApiHub();
-  for (final api in <MusicPlatformApi>[QQMusicApi(), NeteaseApi(), KuGouApi()]) {
+  for (final api in <MusicPlatformApi>[
+    QQMusicApi(),
+    NeteaseApi(),
+    KuGouApi(),
+  ]) {
     hub.register(api);
     api.restoreSession(_loadAccount(api.platform));
   }
@@ -42,7 +53,8 @@ final musicHubProvider = Provider<MusicApiHub>((ref) {
 /// 某个平台的登录态；登录/退出会同步写 Hive，重启后仍保持。
 final accountProvider =
     StateNotifierProvider.family<AccountNotifier, AccountSession?, int>(
-        (ref, platform) => AccountNotifier(platform, _loadAccount(platform)));
+      (ref, platform) => AccountNotifier(platform, _loadAccount(platform)),
+    );
 
 class AccountNotifier extends StateNotifier<AccountSession?> {
   AccountNotifier(this.platform, AccountSession? initial) : super(initial);
@@ -83,6 +95,15 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
   final library = ref.read(libraryProvider);
 
   Future<String?> resolveUrl(Song song) async {
+    // 本地曲目：普通格式原样返回源路径；加密格式（NCM/QMC/KGM…）解密到缓存后
+    // 返回缓存路径。失败时 LocalFormatService.lastError 记录中文原因（评审 R-11）。
+    if (song.platform == JXPlatform.local) {
+      try {
+        return await ref.read(localFormatServiceProvider).playableUrl(song);
+      } catch (_) {
+        return null;
+      }
+    }
     final api = hub.api(song.platform);
     if (api == null) return song.audioUrl;
     try {
@@ -107,6 +128,8 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     urlResolver: resolveUrl,
     lyricsResolver: resolveLyrics,
     onSettingChanged: saveSetting,
+    // 队列懒解密失败时给 UI 一个具体中文原因（评审 R-11）
+    resolutionErrorHint: () => ref.read(localFormatServiceProvider).lastError,
     initialVolume: _readSettingsDouble('volume', 80),
     initialLoopMode: _readSettingsInt('loopMode', 2),
     initialSpeed: _readSettingsDouble('speed', 1.0),
@@ -115,9 +138,29 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
   return service;
 });
 
-/// 本地音乐扫描服务
-final localMusicServiceProvider =
-    Provider<LocalMusicService>((ref) => LocalMusicService());
+/// 本地音乐加密格式解密服务（NCM / QMC / KGM 解码器 + 解密缓存）。
+final localFormatServiceProvider = Provider<LocalFormatService>((ref) {
+  return LocalFormatService(
+    decoders: <EncryptedAudioDecoder>[
+      NcmDecoder(),
+      QmcDecoder(),
+      KgmDecoder(), // 默认用 rootBundle 读 assets/kugou_key.bin，实例内缓存/单飞
+    ],
+  );
+});
+
+/// 本地扫描目录配置（Hive 持久化，见 ADR-004 D5）。
+final localPathsStoreProvider = Provider<LocalPathsStore>(
+  (ref) => LocalPathsStore(),
+);
+
+/// 本地音乐扫描服务（多目录 + 加密格式识别）
+final localMusicServiceProvider = Provider<LocalMusicService>((ref) {
+  return LocalMusicService(
+    formats: ref.read(localFormatServiceProvider),
+    pathsStore: ref.read(localPathsStoreProvider),
+  );
+});
 
 /// 深浅主题
 final darkModeProvider = StateProvider<bool>((ref) {

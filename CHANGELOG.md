@@ -1,5 +1,39 @@
 # CHANGELOG
 
+## 0.10.0+19 — 2026-11-09
+
+### 新增（本地音乐：自定义路径 + 三大平台加密格式 + 常用格式）
+
+- **自定义音乐路径**：本地音乐页「扫描目录」打开目录管理弹层——可添加/删除多个扫描目录（目录浏览器或手动输入）、多目录合并去重扫描、Hive 持久化（`jx_settings.local_scan_paths`）、重启自动扫描；首次使用预填默认候选（应用外部目录、Download、Music、QQ音乐/酷狗/网易云常见下载目录）。
+- **加密格式解密播放**（纯 Dart，Windows/Android 同一实现）：
+  - 网易云 `.ncm`：AES-ECB 密钥盒 + 元数据解析（扫描即显示标题/歌手/专辑/封面）
+  - QQ 音乐 QMC v1/v2：`.qmc0/.qmc2/.qmc3/.qmcflac/.qmcogg/.mflac/.mflac0/.mgg/.mgg1/.bkcmp3/.bkcflac/.tkm`（v2 尾部密钥 TEA 派生；musicex/STag/无密钥尾部明确提示暂不支持）
+  - 酷狗 `.kgm/.kgma/.vpr`：8 MiB 公钥表随包（覆盖 128 MiB 音频）；`.kgg` 识别后明确提示「需要客户端密钥，暂不支持离线解密」
+  - 解密结果缓存到应用支持目录 `<key>/data.<ext>`（同一文件并发单飞、`.part` 原子写、1.5 GB/400 文件 LRU 淘汰、可清理），二次播放直接命中
+  - 解密失败给中文原因（不静默、不崩溃）；队列/播放全部自动下一首时懒解密，失败通过 SnackBar 提示
+- **常用格式**：mp3/flac/m4a/aac/ogg/opus/wav/wma/ape/aiff/aif/dsf/dff/mka 直接扫描播放；元数据读不到时回退「歌手 - 歌名」文件名解析。
+- **Android 权限**：声明 `MANAGE_EXTERNAL_STORAGE`，本地页未授权时显示横幅并可跳转「所有文件访问」授权页（API 30+）；授权返回后自动复核刷新。
+
+### 架构与实现
+
+- ADR-004（Accepted）：vendored MIT 包 `packages/music_decoder`（NCM/QMC，未改上游源码）+ 按 MIT 参考实现移植的酷狗 KGM 解码器；统一 `EncryptedAudioDecoder` 契约、解码后音频容器自检、底层异常中文化。公钥表/算法来源与 MIT 许可见 `THIRD-PARTY-NOTICES.md`。
+- 播放链路：本地曲目播放前由 `LocalFormatService` 解密（普通格式原样），解析结果**只用于打开播放器**；队列/播放历史/收藏保留源文件路径（避免缓存清理后历史无法回放）。
+
+### 测试与验收
+
+- 新增测试：`test/local_formats/ncm_qmc_test.dart`（27）、`kgm_test.dart`（23）、`test/local_format_service_test.dart`（24）、`test/local_paths_test.dart`（7）、`test/local_page_test.dart`（6）、`test/local_playback_integration_test.dart`（6）——含跨语言黄金向量、合成样本回环、异常中文断言、R-1/R-11 回归。
+- 评审修复（架构阶段二 R-18/R-19/R-22/R-23/R-26）：文件名回退只填补缺失标签字段（不再覆盖标签标题）；Android 10 及以下补 `Permission.storage` 权限退路；QMC 输出格式以容器嗅探为准；NCM 元数据长度上限防御 + 无元数据块（metaLength=0）合法样本放行。
+- 门禁：`flutter analyze --no-pub lib` 0 issue；`flutter test --no-pub` **222 passed / 4 skipped 全绿**（详见 QA 测试报告 `docs/projects/本地音乐与加密格式/测试报告.md`）。
+- 覆盖边界：不随包分发真实版权加密样本（合规），E2E 用合成样本；真实 NCM/QMC/KGM 文件需用户人工验收（步骤见测试报告）。
+
+### 修复（酷狗扫码登录误报「登录态不完整 20006」）
+
+- 根因：扫码成功（`v2/get_userinfo_qrcode` → `data.status=4`，直接返回 `token`+`userid`）后，旧代码又调**已被服务端废弃**的 `loginservice.kugou.com/v1/login_by_token_get` 换登录态，返回 `20006`（业务失败）→ 被误报为「登录成功但登录态不完整（VIP 权益可能不可用）」。
+- 修复：`status=4` 直接以 `token`+`userid` 建立会话（`lastError=null`）；**整段删除** legacy 换登录态调用、三套候选与误导文案；取码/轮询/取链主路径保持不变。真实 token 本机实测：带 `Cookie: token/userid` 取免费歌直链正常（`getSongInfo` → status=1 + sharefs URL）。
+- 测试：新增 `test/kugou_login_state_test.dart` 8 项（Web 签名、设备 MID、云歌单 AES 固定向量由 Node/OpenSSL 独立算得；`status=4` 不调 legacy 的回归守卫；过期/错误码/取链带 Cookie）；酷狗范围 `dart analyze` 0 issue、定向单测 +25 全绿。
+- 已知边界：web 型 token（appid=1014）在酷狗 Android 网关域受限（实测 20006/20018/20017），VIP 高音质/云歌单需后续迁 Android 型 token（appid=1001 + 真实 dfid + Android 签名）；实扫复验待用户窗口（验收标准：无警告 / 已登录 / 普通歌可播 / 重启保持）。
+- 报告：`docs/projects/酷狗登录态修复/修复报告.md`、`测试报告-验收.md`。
+
 ## 0.9.9+18（扫码登录修复，同日续）— 2026-11-09
 
 ### 修复（扫码登录：QQ / 网易云端到端可用）

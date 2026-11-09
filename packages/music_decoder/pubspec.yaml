@@ -1,0 +1,15 @@
+name: music_decoder
+description: Decode NetEase Cloud Music (.ncm) and QQ Music encrypted files back to playable audio formats.
+version: 0.1.0
+repository: https://github.com/djbird2046/music_decoder
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  # path: ^1.9.0
+  pointycastle: ^3.9.1
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

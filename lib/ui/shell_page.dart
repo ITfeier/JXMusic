@@ -1,8 +1,12 @@
 import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../core/constants.dart';
+import '../models/song.dart';
 import '../providers.dart';
+import '../services/playback.dart';
 import 'home_page.dart';
 import 'library_page.dart';
 import 'search_page.dart';
@@ -31,12 +35,39 @@ class ShellPage extends ConsumerWidget {
     final index = ref.watch(navIndexProvider);
     final desktop = isDesktopLayout(context);
 
-    final pages = const [
-      HomePage(),
-      SearchPage(),
-      LibraryPage(),
-      LocalPage(),
-      SettingsPage(),
+    // 队列懒解密失败提示（评审 R-11）：自动下一首/播放全部遇到无法解密的文件时，
+    // PlayerService.lastResolutionError 会给出具体中文原因，这里用 SnackBar 提示一次。
+    ref.listen<String?>(
+      playerServiceProvider.select((p) => p.lastResolutionError),
+      (previous, next) {
+        if (next == null || next.isEmpty || next == previous) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(next)));
+          ref.read(playerServiceProvider).clearResolutionError();
+        });
+      },
+    );
+
+    // 本地曲目播放：加密格式由 PlayerService 的 resolver 解密（点击时页面已带
+    // 进度预解密并回填元数据）；这里统一走 resolveAndPlay，队列保留源文件路径。
+    void playLocalQueue(List<Song> queue, int index) {
+      if (index < 0 || index >= queue.length) return;
+      resolveAndPlay(ref, queue[index], queue: queue);
+    }
+
+    final pages = <Widget>[
+      const HomePage(),
+      const SearchPage(),
+      const LibraryPage(),
+      LocalPage(
+        musicService: ref.read(localMusicServiceProvider),
+        formatService: ref.read(localFormatServiceProvider),
+        pathsStore: ref.read(localPathsStoreProvider),
+        playQueue: playLocalQueue,
+      ),
+      const SettingsPage(),
     ];
 
     final navItems = [
@@ -47,8 +78,7 @@ class ShellPage extends ConsumerWidget {
       (Icons.settings_rounded, '设置'),
     ];
 
-    void switchTab(int i) =>
-        ref.read(navIndexProvider.notifier).state = i;
+    void switchTab(int i) => ref.read(navIndexProvider.notifier).state = i;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -159,8 +189,11 @@ class _DesktopSidebar extends StatelessWidget {
                       ),
                     ],
                   ),
-                  child: const Icon(Icons.graphic_eq_rounded,
-                      color: Colors.white, size: 26),
+                  child: const Icon(
+                    Icons.graphic_eq_rounded,
+                    color: Colors.white,
+                    size: 26,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Text(
@@ -179,7 +212,9 @@ class _DesktopSidebar extends StatelessWidget {
                       final selected = index == i;
                       return Padding(
                         padding: const EdgeInsets.symmetric(
-                            vertical: 6, horizontal: 12),
+                          vertical: 6,
+                          horizontal: 12,
+                        ),
                         child: GestureDetector(
                           onTap: () => onTap(i),
                           child: AnimatedContainer(
@@ -204,8 +239,8 @@ class _DesktopSidebar extends StatelessWidget {
                                   color: selected
                                       ? Colors.white
                                       : isDark
-                                          ? JXColors.textOnDarkSecondary
-                                          : JXColors.textSecondary,
+                                      ? JXColors.textOnDarkSecondary
+                                      : JXColors.textSecondary,
                                   size: 22,
                                 ),
                                 const SizedBox(height: 3),
@@ -219,8 +254,8 @@ class _DesktopSidebar extends StatelessWidget {
                                     color: selected
                                         ? Colors.white
                                         : isDark
-                                            ? JXColors.textOnDarkSecondary
-                                            : JXColors.textSecondary,
+                                        ? JXColors.textOnDarkSecondary
+                                        : JXColors.textSecondary,
                                   ),
                                 ),
                               ],
@@ -258,8 +293,9 @@ class _DesktopTopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final textSub =
-        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+    final textSub = isDark
+        ? JXColors.textOnDarkSecondary
+        : JXColors.textSecondary;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 12, 20, 6),
@@ -272,13 +308,17 @@ class _DesktopTopBar extends StatelessWidget {
               Text(
                 title,
                 style: const TextStyle(
-                    fontSize: 22, fontWeight: FontWeight.w700),
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
               const SizedBox(width: 8),
               Padding(
                 padding: const EdgeInsets.only(bottom: 4),
-                child: Text(crumb,
-                    style: TextStyle(fontSize: 11, color: textSub)),
+                child: Text(
+                  crumb,
+                  style: TextStyle(fontSize: 11, color: textSub),
+                ),
               ),
             ],
           ),
@@ -302,11 +342,16 @@ class _DesktopTopBar extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.search_rounded,
-                      size: 19, color: JXColors.primary),
+                  const Icon(
+                    Icons.search_rounded,
+                    size: 19,
+                    color: JXColors.primary,
+                  ),
                   const SizedBox(width: 8),
-                  Text('搜索歌曲 / 歌手 / 专辑',
-                      style: TextStyle(fontSize: 12, color: textSub)),
+                  Text(
+                    '搜索歌曲 / 歌手 / 专辑',
+                    style: TextStyle(fontSize: 12, color: textSub),
+                  ),
                 ],
               ),
             ),
@@ -333,8 +378,11 @@ class _DesktopTopBar extends StatelessWidget {
                   ),
                 ],
               ),
-              child: const Icon(Icons.person_rounded,
-                  color: Colors.white, size: 18),
+              child: const Icon(
+                Icons.person_rounded,
+                color: Colors.white,
+                size: 18,
+              ),
             ),
           ),
         ],
@@ -366,7 +414,9 @@ class _MobileTabBar extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
-              color: isDark ? JXColors.glassStrokeDark : JXColors.glassStrokeLight,
+              color: isDark
+                  ? JXColors.glassStrokeDark
+                  : JXColors.glassStrokeLight,
             ),
             boxShadow: [
               BoxShadow(
@@ -397,7 +447,9 @@ class _MobileTabBar extends StatelessWidget {
                               AnimatedContainer(
                                 duration: const Duration(milliseconds: 200),
                                 padding: const EdgeInsets.symmetric(
-                                    horizontal: 14, vertical: 3),
+                                  horizontal: 14,
+                                  vertical: 3,
+                                ),
                                 decoration: BoxDecoration(
                                   color: index == i
                                       ? JXColors.primary.withValues(alpha: 0.16)
@@ -410,8 +462,8 @@ class _MobileTabBar extends StatelessWidget {
                                   color: index == i
                                       ? JXColors.primary
                                       : isDark
-                                          ? JXColors.textOnDarkSecondary
-                                          : JXColors.textSecondary,
+                                      ? JXColors.textOnDarkSecondary
+                                      : JXColors.textSecondary,
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -425,8 +477,8 @@ class _MobileTabBar extends StatelessWidget {
                                   color: index == i
                                       ? JXColors.primary
                                       : isDark
-                                          ? JXColors.textOnDarkSecondary
-                                          : JXColors.textSecondary,
+                                      ? JXColors.textOnDarkSecondary
+                                      : JXColors.textSecondary,
                                 ),
                               ),
                             ],

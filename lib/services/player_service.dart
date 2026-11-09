@@ -1,6 +1,9 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
+
+import '../core/constants.dart';
 import '../models/song.dart';
 import '../models/lyric.dart';
 
@@ -34,6 +37,7 @@ class PlayerService extends ChangeNotifier {
     this.urlResolver,
     this.lyricsResolver,
     this.onSettingChanged,
+    this.resolutionErrorHint,
     double initialVolume = 80,
     int initialLoopMode = 2,
     double initialSpeed = 1.0,
@@ -56,6 +60,22 @@ class PlayerService extends ChangeNotifier {
 
   /// 音量/循环模式/倍速变化时回调（用于持久化用户偏好）
   final void Function(String key, dynamic value)? onSettingChanged;
+
+  /// 本地解密失败的具体中文原因提供者（由 LocalFormatService 提供，评审 R-11）；
+  /// 为空时退回通用文案。
+  final String? Function()? resolutionErrorHint;
+
+  String? _lastResolutionError;
+
+  /// 最近一次切歌时本地曲目解析/解密失败的原因（中文，供 UI 提示）。
+  String? get lastResolutionError => _lastResolutionError;
+
+  /// UI 展示完提示后清除（不改变当前播放）。
+  void clearResolutionError() {
+    if (_lastResolutionError == null) return;
+    _lastResolutionError = null;
+    notifyListeners();
+  }
 
   Player? _player;
 
@@ -191,24 +211,24 @@ class PlayerService extends ChangeNotifier {
       : (_sourcesBySong[currentSong!.globalId] ?? const []);
 
   /// 当前曲目音源按平台顺序（QQ → 网易云 → 酷狗）
-  List<Song> get orderedSources => [...currentSources]
-    ..sort((a, b) => a.platform.compareTo(b.platform));
+  List<Song> get orderedSources =>
+      [...currentSources]..sort((a, b) => a.platform.compareTo(b.platform));
 
   /// 播放单曲：若在队列中则定位，否则替换队列。
   /// [sources] 传入该曲目在其它平台的音源，用于播放页「切换音源」。
   /// [replaceCurrent] 为 true 时用于切源：只替换当前队列项
   /// （[replaceCurrentInQueue]），队列长度与 [currentIndex] 保持不变；
   /// 当前位置越界时退回原有队列逻辑。
-  Future<void> playSong(Song song,
-      {List<Song>? queue,
-      List<Song>? sources,
-      bool replaceCurrent = false}) async {
+  Future<void> playSong(
+    Song song, {
+    List<Song>? queue,
+    List<Song>? sources,
+    bool replaceCurrent = false,
+  }) async {
     if (sources != null && sources.isNotEmpty) {
       _sourcesBySong[song.globalId] = List<Song>.unmodifiable(sources);
     }
-    if (replaceCurrent &&
-        _currentIndex >= 0 &&
-        _currentIndex < _queue.length) {
+    if (replaceCurrent && _currentIndex >= 0 && _currentIndex < _queue.length) {
       // 先算好替换结果，再整体替换内部队列：级联 `..clear()..addAll(f(_queue))`
       // 会先 clear 再对已清空的 _queue 求值，历史 bug（队列被清空）。
       final replaced = replaceCurrentInQueue(
@@ -229,8 +249,7 @@ class PlayerService extends ChangeNotifier {
         ..addAll(next);
       _currentIndex = idx >= 0 ? idx : 0;
     } else {
-      final idx =
-          _queue.indexWhere((s) => s.globalId == song.globalId);
+      final idx = _queue.indexWhere((s) => s.globalId == song.globalId);
       if (idx >= 0) {
         _currentIndex = idx;
       } else {
@@ -253,22 +272,43 @@ class PlayerService extends ChangeNotifier {
     _currentIndex = index;
     var song = _queue[index];
 
-    // 队列里的歌曲可能只有平台 id、没有直链（例如"播放全部"、自动下一首），
-    // 这里按需解析一次并回写队列，避免后续歌曲卡住播不了。
-    var url = song.audioUrl;
-    if (url == null || url.isEmpty) {
+    // 本地曲目（含 NCM/QMC/KGM 等加密格式）即使 audioUrl 非空也要走 resolver：
+    // 普通格式原样返回源路径，加密格式返回解密缓存路径。
+    // 解析结果只用于打开播放器，**不写回队列/播放历史**：历史/收藏必须保留
+    // 源文件路径，否则解密缓存被清理后无法回放（评审 R-1）。
+    String? playUrl = song.audioUrl;
+    if (song.platform == JXPlatform.local) {
       try {
-        url = await urlResolver?.call(song);
+        final resolved = await urlResolver?.call(song);
+        // resolver 返回 null 表示解密/解析失败，绝不能回退到密文源路径。
+        playUrl = (resolved == null || resolved.isEmpty) ? null : resolved;
+      } catch (e) {
+        debugPrint('[JXMusic] 本地音频解析失败: $e');
+        playUrl = null;
+      }
+      if (playUrl == null || playUrl.isEmpty) {
+        _lastResolutionError =
+            resolutionErrorHint?.call() ?? '本地文件无法解密播放：${song.title}';
+        debugPrint('[JXMusic] 本地曲目不可播: $_lastResolutionError');
+        notifyListeners();
+        return;
+      }
+      if (_lastResolutionError != null) _lastResolutionError = null;
+    } else if (playUrl == null || playUrl.isEmpty) {
+      // 队列里的歌曲可能只有平台 id、没有直链（例如"播放全部"、自动下一首），
+      // 这里按需解析一次并回写队列，避免后续歌曲卡住播不了。
+      try {
+        playUrl = await urlResolver?.call(song);
       } catch (e) {
         debugPrint('[JXMusic] 直链解析失败: $e');
-        url = null;
+        playUrl = null;
       }
-      if (url != null && url.isNotEmpty) {
-        song = song.copyWith(audioUrl: url);
+      if (playUrl != null && playUrl.isNotEmpty) {
+        song = song.copyWith(audioUrl: playUrl);
         _queue[index] = song;
       }
     }
-    if (url == null || url.isEmpty) {
+    if (playUrl == null || playUrl.isEmpty) {
       debugPrint('[JXMusic] 歌曲无可播放链接: ${song.title}');
       notifyListeners();
       return;
@@ -286,7 +326,7 @@ class PlayerService extends ChangeNotifier {
       } else if (song.platform == 2) {
         headers = {'Referer': 'https://m.kugou.com/'};
       }
-      await _player?.open(Media(url, httpHeaders: headers), play: true);
+      await _player?.open(Media(playUrl, httpHeaders: headers), play: true);
       onSongStarted?.call(song);
       _loadLyrics(song);
     } catch (e) {
@@ -299,22 +339,23 @@ class PlayerService extends ChangeNotifier {
   void _loadLyrics(Song song) {
     final resolver = lyricsResolver;
     if (resolver == null) return;
-    resolver(song).then((lines) {
-      if (currentSong?.globalId != song.globalId) return;
-      _lyrics = lines;
-      _lyricIndex = -1;
-      _updateLyricIndex();
-      notifyListeners();
-    }).catchError((Object e) {
-      debugPrint('[JXMusic] 歌词加载失败: $e');
-    });
+    resolver(song)
+        .then((lines) {
+          if (currentSong?.globalId != song.globalId) return;
+          _lyrics = lines;
+          _lyricIndex = -1;
+          _updateLyricIndex();
+          notifyListeners();
+        })
+        .catchError((Object e) {
+          debugPrint('[JXMusic] 歌词加载失败: $e');
+        });
   }
 
   Future<void> play() => _player?.play() ?? Future.value();
   Future<void> pause() => _player?.pause() ?? Future.value();
 
-  Future<void> toggle() =>
-      _playing ? pause() : play();
+  Future<void> toggle() => _playing ? pause() : play();
 
   Future<void> seek(Duration d) => _player?.seek(d) ?? Future.value();
 

@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- 联网：搜索、播放、扫码登录全部依赖网络（release 包必须显式声明，
          Flutter 模板只在 debug/profile 清单里带 INTERNET） -->
     <uses-permission android:name="android.permission.INTERNET"/>
@@ -8,6 +9,11 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
+    <!-- 自定义音乐目录扫描：Android 11+ 需要「所有文件访问」权限（MANAGE_EXTERNAL_STORAGE）。
+         本项目侧载分发，不面向 Play 商店上架；用户可在系统设置中随时收回该权限。 -->
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage"/>
     <application
         android:label="jxmusic"
         android:name="${applicationName}"
