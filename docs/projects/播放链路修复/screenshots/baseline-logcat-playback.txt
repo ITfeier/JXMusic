@@ -1,0 +1,12 @@
+﻿
+11-09 08:56:19.522 10623 10690 D jxmusic.jxmusi: PlayerBase::PlayerBase()
+11-09 08:56:19.522 10623 10690 D jxmusic.jxmusi: TrackPlayerBase::TrackPlayerBase()
+11-09 08:56:19.539  1152  1368 D AF::TrackHandle: OpPlayAudio: track:95 usage:1 not muted
+11-09 08:56:19.549 10623 11865 D jxmusic.jxmusi: PlayerBase::stop() from IPlayer
+11-09 08:56:31.775 10623 11865 D jxmusic.jxmusi: PlayerBase::stop() from IPlayer
+11-09 08:56:32.042 10623 10690 D jxmusic.jxmusi: PlayerBase::PlayerBase()
+11-09 08:56:32.042 10623 10690 D jxmusic.jxmusi: TrackPlayerBase::TrackPlayerBase()
+11-09 08:56:32.049  1152  1368 D AF::TrackHandle: OpPlayAudio: track:96 usage:1 not muted
+11-09 08:56:32.060 10623 11918 D jxmusic.jxmusi: PlayerBase::stop() from IPlayer
+
+

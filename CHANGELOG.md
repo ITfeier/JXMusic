@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## 0.9.9+18 — 2026-11-09
+
+### 修复（真机反馈：QQ 歌单详情 / 歌单迷你播放器 / 热歌榜「更多」）
+
+- **QQ 歌单详情「0 首 + 列表空白」**：`QQMusicApi.playlistSongs()` 请求 `u.y.qq.com/cgi-bin/musicu.fcg` 时未带 Referer，而 JXHttp 全局默认 `Referer: https://music.163.com/` 被 QQ 判定为站外来源 → 返回空 `songlist`（`total_song_num=0`）。补 `Referer: https://y.qq.com/`（实测同一 disstid：默认 Referer 0 首 → 修复后 66 首）。详情页头部改按实际加载首数展示（加载中…/加载失败/暂无歌曲/N 首），不再用 QQ 歌单广场恒为 0 的 `playlist.songCount`；错误态补「重试」，空歌单显示「该歌单暂无歌曲」+ 重试；空列表时「播放全部」禁用。
+- **歌单详情页看不到底部迷你播放器**：`PlayerBar` 只挂在 ShellPage，歌单详情 / 我的歌单是 `Navigator.push` 的整页路由，会把底部条盖住。两个详情页底部各嵌入 `const PlayerBar()`（未播放时占位，播放后显示曲目/歌手/进度、点击进播放页）；补 360x640dp 布局回归。
+- **首页热歌榜「更多」无法展开**：`onMore` 原来绑 `_load`（重载首页、闪 loading、内容不变）。改为内联展开/收起：手机热歌榜与桌面「热门单曲」直接用 `_tops` 已缓存数据展开全部榜单，按钮「更多 ›/收起 ›」，不触发网络请求、不闪 loading。
+
+### 测试
+
+- 新增 3 个 widget 用例：`test/playlist_detail_page_test.dart`（实际首数/无「0 首」/空态重试/PlayerBar 嵌入/360x640 无溢出）、`test/home_rank_expand_test.dart`（展开收起/零网络请求/不闪 loading）；旧 `test/playlist_list_page_test.dart` 补 `PlayerService(initPlayer:false)` 注入（详情页新增常驻播放条后必须，否则旧用例读未初始化 Hive）。
+- 门禁（提交 `57c0624` 干净树）：`flutter analyze lib` 零问题；`flutter test` **116 passed / 4 skipped**（工作副本另含并行会话未提交用例时为 119，不计入本次提交）。
+- 模拟器 E2E（emulator-5554，360x640dp）：D1 QQ 歌单 66 首、D2 酷狗详情「播放全部」→迷你条→播放页（进度真实推进 + logcat AudioTrack）、D2b 自建歌单详情条、D3 热歌榜展开/收起（收起后截图与展开前逐字节一致）全 PASS；首页/搜索/播放页/Shell 迷你条回归 PASS。详细报告：`docs/projects/播放链路修复/测试报告.md`。
+
+### 交付与构建教训
+
+- 最终 APK：`jxmusic-0.9.9-final.apk`（SHA256 `E1A645EE…AAB9`，106,674,209 B，versionName 0.9.9 / versionCode 18，模拟器冷启动冒烟通过）。
+- **干净 worktree 构建前必须先 `flutter pub get --offline`**，生成被 gitignore 的 `android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java`；缺它会产生「装机后启动白屏 + ClassNotFoundException: GeneratedPluginRegistrant」（本次曾产出坏包 `445BE3A0`，已废弃留证）。交付前自检：解包 APK 的 classes.dex 必须含该注册类，并模拟器冒烟启动到首页。
+- 本次提交 `57c0624` 只含本修复 8 个文件；工作副本中并行会话的扫码登录未提交改动未纳入本提交。
+- 遗留：网易云《森林之心》播放页停在 00:00 为**既有问题**（干净包复现，与本次修复无关），另立专项。
+
 ## 0.9.8+17 — 2026-11-09
 
 ### 修复（真机反馈：首页歌单 / 播放页）

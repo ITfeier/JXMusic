@@ -1,0 +1,100 @@
+﻿
+11-09 09:41:21.190 14761 14761 E GeneratedPluginsRegister: Tried to automatically register plugins with FlutterEngine (
+io.flutter.embedding.engine.FlutterEngine@1a1cc79) but could not find or invoke the GeneratedPluginRegistrant.
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: Received exception while registering
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: java.lang.ClassNotFoundException: io.flutter.plugins.Generat
+edPluginRegistrant
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at java.lang.Class.classForName(Native Method)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at java.lang.Class.forName(Class.java:454)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at java.lang.Class.forName(Class.java:379)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at io.flutter.embedding.engine.plugins.util.GeneratedPlugin
+Register.registerGeneratedPlugins(GeneratedPluginRegister.java:77)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivity.configureFl
+utterEngine(FlutterActivity.java:1355)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivityAndFragmentD
+elegate.onAttach(FlutterActivityAndFragmentDelegate.java:228)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivity.onCreate(Fl
+utterActivity.java:645)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.Activity.performCreate(Activity.java:8058)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.Activity.performCreate(Activity.java:8038)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.Instrumentation.callActivityOnCreate(Instrum
+entation.java:1345)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.ActivityThread.performLaunchActivity(Activit
+yThread.java:3744)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.ActivityThread.handleLaunchActivity(Activity
+Thread.java:3950)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.servertransaction.LaunchActivityItem.execute
+(LaunchActivityItem.java:103)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.servertransaction.TransactionExecutor.execut
+eCallbacks(TransactionExecutor.java:135)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.servertransaction.TransactionExecutor.execut
+e(TransactionExecutor.java:95)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.ActivityThread$H.handleMessage(ActivityThrea
+d.java:2302)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.os.Looper.loopOnce(Looper.java:201)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.os.Looper.loop(Looper.java:288)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at android.app.ActivityThread.main(ActivityThread.java:8085
+)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at java.lang.reflect.Method.invoke(Native Method)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.
+run(RuntimeInit.java:571)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:
+1091)
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: Caused by: java.lang.ClassNotFoundException: io.flutter.plug
+ins.GeneratedPluginRegistrant
+11-09 09:41:21.192 14761 14761 E GeneratedPluginsRegister: 	... 23 more
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: Tried to automatically register plugins with FlutterEngine (
+io.flutter.embedding.engine.FlutterEngine@1a1cc79) but could not find or invoke the GeneratedPluginRegistrant.
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: Received exception while registering
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: java.lang.ClassNotFoundException: io.flutter.plugins.Generat
+edPluginRegistrant
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at java.lang.Class.classForName(Native Method)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at java.lang.Class.forName(Class.java:454)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at java.lang.Class.forName(Class.java:379)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at io.flutter.embedding.engine.plugins.util.GeneratedPlugin
+Register.registerGeneratedPlugins(GeneratedPluginRegister.java:77)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivity.configureFl
+utterEngine(FlutterActivity.java:1355)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivityAndFragmentD
+elegate.onAttach(FlutterActivityAndFragmentDelegate.java:228)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at io.flutter.embedding.android.FlutterActivity.onCreate(Fl
+utterActivity.java:645)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.Activity.performCreate(Activity.java:8058)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.Activity.performCreate(Activity.java:8038)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.Instrumentation.callActivityOnCreate(Instrum
+entation.java:1345)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.ActivityThread.performLaunchActivity(Activit
+yThread.java:3744)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.ActivityThread.handleLaunchActivity(Activity
+Thread.java:3950)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.servertransaction.LaunchActivityItem.execute
+(LaunchActivityItem.java:103)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.servertransaction.TransactionExecutor.execut
+eCallbacks(TransactionExecutor.java:135)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.servertransaction.TransactionExecutor.execut
+e(TransactionExecutor.java:95)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.ActivityThread$H.handleMessage(ActivityThrea
+d.java:2302)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.os.Handler.dispatchMessage(Handler.java:106)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.os.Looper.loopOnce(Looper.java:201)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.os.Looper.loop(Looper.java:288)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at android.app.ActivityThread.main(ActivityThread.java:8085
+)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at java.lang.reflect.Method.invoke(Native Method)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.
+run(RuntimeInit.java:571)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:
+1091)
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: Caused by: java.lang.ClassNotFoundException: io.flutter.plug
+ins.GeneratedPluginRegistrant
+11-09 09:42:11.313 14898 14898 E GeneratedPluginsRegister: 	... 23 more
+
+
+
+  Window #5 Window{eedbd0a u0 Splash Screen com.jxmusic.jxmusic}:
+    WindowStateAnimator{a7a85cc Splash Screen com.jxmusic.jxmusic}:
+      mSurface=Surface(name=Splash Screen com.jxmusic.jxmusic)/@0x61393f6
+  imeLayeringTarget in display# 0 Window{eedbd0a u0 Splash Screen com.jxmusic.jxmusic}
+
+
