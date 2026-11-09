@@ -1,0 +1,35 @@
+﻿=== 输入(脱敏) ===
+token=c8da…de1c(len=64) userid=3714…1630(len=9) dfid=(空) mid=2728…3398(len=39) guid=lkf4…3e78(len=32)
+
+=== A) 设备注册（真实 dfid）===
+[register_dev] 解密失败：FormatException: AES 密文长度非法 HTTP=200 content-type=application/json;charset=utf-8 bytes=44 preview={"data":null,"status…"error_code":20006}
+(len=44)
+  带登录态注册失败，改用未登录形态重试一次
+[register_dev] 解密失败：FormatException: AES 密文长度非法 HTTP=200 content-type=application/json;charset=utf-8 bytes=44 preview={"error_code":20006,…a":null,"status":0}
+(len=44)
+注册失败，使用传入/随机 dfid 继续（预期 20017/20018/20028 风险）
+
+=== B) v5/login_by_token（刷新 + VIP 字段）===
+[v5/login_by_token] HTTP=200 status=0 error_code=20018 msg=
+
+=== C) VIP 权益（union vip）===
+[union_vip] HTTP=200 status=0 error_code=20017 vip_type=null data=len=27
+
+=== C2) 用户信息（验证 token+userid 是有效登录态）===
+[user_info] HTTP=200 status=0 error_code=20006 nickname=(空) vip_type=null vip_token_len=0 userid=-
+
+=== D) 取链测试（v6/priv_url + v5/url + 旧 getSongInfo）===
+[search] <em>晴天</em> hash=B3A52A7A…E9A818B7(len=32) privilege=10
+[search] <em>晴天</em> hash=48C685F6…1CA9DB44(len=32) privilege=0
+[search] <em>晴天</em> hash=5C0E4FA7…B961E761(len=32) privilege=8
+[search] <em>晴天</em> (温柔女声版) hash=91A662A6…EAEFDF3A(len=32) privilege=0
+[search] <em>晴天</em> (交响改编版) hash=6D5DB431…E68E009C(len=32) privilege=0
+[search] 选中 hash=48C685F6…1CA9DB44(len=32) 免费歌=true （用户非 VIP，免费歌必须可播）
+[legacy getSongInfo] HTTP=200 status=1 error= url=https://sharefs.kugou.com/2026…1000_us0_pi409_s3161048046.mp3(len=148) privilege=0
+[v5/url] HTTP=200 status=0 error_code=31833 urlCount=0
+[v6/priv_url] HTTP=200 status=0 error_code=20010 msg= urlCount=0
+
+=== 结论提示 ===
+· register_dev status=1 → 真实 dfid 可用；否则取链大概率 20028/20018。
+· v5/login_by_token status=1 → token 可刷新、VIP 字段可用；若 status=0(20006) 说明该 token 协议域不匹配。
+· v6/priv_url 返回 url → 登录态可用于播放；空 url 且 error_code!=0 → 受限。

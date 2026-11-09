@@ -1,0 +1,16 @@
+=== APK 元数据核对（release APK 存在性与时间先后）===
+APK: build/app/outputs/flutter-apk/app-release.apk
+size=106657825 bytes
+mtime=2026-11-09 19:40:51
+sha256=26D9FCD546A3DE2FB4B286F6DD19E98C57F909AF496F3E52A17BFC5B57BEE9A5
+
+相关源文件 mtime：
+  lib/services/api/kugou_api.dart       2026-11-09 19:36:40
+  lib/services/api/kg_crypto.dart       2026-11-09 19:28:32
+  test/kugou_login_state_test.dart      2026-11-09 19:37:20
+  tool/check_kg_login_state.dart        2026-11-09 19:34:42
+
+结论：APK mtime 晚于修复源文件 mtime，与修复报告“19:40:51 构建”一致。
+注意：本文件**不包含** APK 内字符串扫描结论。曾尝试对 libapp.so 做明文 UTF-8 字符串匹配，
+但对照组（必然存在的 UI 文案“酷狗音乐”“设置”“v0.9.7”）同样未命中，说明 Dart AOT
+字符串非明文 UTF-8 存储，该方法学不成立，故不作为证据。

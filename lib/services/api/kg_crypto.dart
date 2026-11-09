@@ -140,6 +140,98 @@ class KgCrypto {
   static String md5Hex(String text) =>
       md5.convert(utf8.encode(text)).toString();
 
+  // ---- 2026-11 酷狗登录态修复新增：Web/Android/设备注册签名 + 云歌单 AES ----
+
+  /// Web 签名盐（login-user.kugou.com / 官网 H5）
+  static const String webSalt = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
+
+  /// Android 标准版签名盐（gateway / tracker / login.user.kugou.com）
+  static const String androidSalt = 'OIlwieks28dk2k092lksi2UIkp';
+
+  /// 设备注册签名盐（register_dev 用值排序，两侧夹 "1014"）
+  static const String registerSalt = '1014';
+
+  /// 酷狗随机串字母表（参考实现 util/util.js randomString）
+  static const String _randomAlphabet = '1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+  /// 生成随机串（默认字母表：0-9A-Z；长度默认 16）
+  static String randomString([int len = 16, Random? random]) {
+    final rng = random ?? Random.secure();
+    return List<String>.generate(
+        len, (_) => _randomAlphabet[rng.nextInt(_randomAlphabet.length)]).join();
+  }
+
+  /// 生成 GUID（32 位小写 hex，参考实现用 md5(uuidv4)）
+  static String randomGuid([Random? random]) =>
+      randomString(32, random).toLowerCase();
+
+  /// 设备 MID = 把 GUID 的 md5 hex 当作 16 进制大整数转 10 进制字符串。
+  /// 注意：结果可能是 30+ 位十进制，**必须按字符串处理**。
+  static String calculateMid(String guid) {
+    final digest = md5Hex(guid);
+    return BigInt.parse(digest, radix: 16).toString();
+  }
+
+  /// Web 版签名：md5(salt + 排序后的 "k=v" 直接拼接 + data + salt)，小写 hex。
+  static String signWeb(Map<String, String> params, [String data = '']) {
+    final keys = params.keys.toList()..sort();
+    final joined = keys.map((k) => '$k=${params[k]}').join();
+    return md5Hex('$webSalt$joined$data$webSalt');
+  }
+
+  /// Android 版签名：md5(salt + 排序后的 "k=v"（对象 JSON 化）+ body + salt)，小写 hex。
+  /// GET 请求 [data] 传空串；POST 请求传**原始 body 字符串**。
+  static String signAndroid(Map<String, Object?> params, [String data = '']) {
+    final keys = params.keys.toList()..sort();
+    final joined = keys.map((k) {
+      final v = params[k];
+      return '$k=${v is Map || v is List ? jsonEncode(v) : v}';
+    }).join();
+    return md5Hex('$androidSalt$joined$data$androidSalt');
+  }
+
+  /// 设备注册签名：md5("1014" + 参数**值**排序拼接 + "1014")，小写 hex。
+  static String signRegister(Map<String, String> params) {
+    final values = params.values.toList()..sort();
+    return md5Hex('$registerSalt${values.join()}$registerSalt');
+  }
+
+  /// 云歌单/设备注册用的 AES 约定：
+  /// key = 随机 6 字符串（小写），AESKey = md5(key)[0:16]，IV = md5(key)[16:32]，
+  /// AES-CBC/PKCS7，密文以 **base64** 输出。
+  static ({String key, String str}) playlistAesEncrypt(
+      Map<String, Object?> data,
+      [Random? random]) {
+    final key = randomString(6, random).toLowerCase();
+    final digest = md5Hex(key);
+    final cipherText = aesCbcEncryptHex(
+        jsonEncode(data), digest.substring(0, 16), digest.substring(16, 32));
+    return (key: key, str: base64Encode(fromHex(cipherText)));
+  }
+
+  /// 云歌单/设备注册响应解密：base64 密文，key 为请求时的随机 6 字符串。
+  static Map<String, dynamic> playlistAesDecrypt(String base64Cipher, String key) {
+    final digest = md5Hex(key);
+    final cipherHex = toHex(base64Decode(base64Cipher.trim()));
+    final plain = aesCbcDecryptHex(
+        cipherHex, digest.substring(0, 16), digest.substring(16, 32));
+    final decoded = jsonDecode(plain);
+    if (decoded is Map<String, dynamic>) return decoded;
+    throw const FormatException('解密结果不是 JSON 对象');
+  }
+
+  /// RSA PKCS#1 v1.5 加密（对应参考实现 rsaEncrypt2），输出小写 hex。
+  /// 用于 register_dev 的 p 参数、user_info 的 p 等。
+  static String rsaPkcs1EncryptHex(String plainText, {String pem = publicKeyPem}) {
+    final modulus = BigInt.parse(pemPublicKeyModulusHex(pem), radix: 16);
+    final exponent = rsaExponent;
+    final publicKey = RSAPublicKey(modulus, BigInt.from(exponent));
+    final cipher = PKCS1Encoding(RSAEngine())
+      ..init(true, PublicKeyParameter<RSAPublicKey>(publicKey));
+    final encrypted = cipher.process(Uint8List.fromList(utf8.encode(plainText)));
+    return toHex(encrypted);
+  }
+
   static String toHex(List<int> bytes) =>
       bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
