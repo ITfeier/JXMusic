@@ -9,3 +9,7 @@ analyzer:
     - windows/**
     - macos/**
     - linux/**
+    # 开发期探测/校验脚本：非交付物，仅本地运行（原 126 条 info + 3 条 warning 噪音来源）
+    - tool/**
+    # path 依赖子包 packages/music_decoder 的测试：由该子包自身 analysis_options 管理
+    - packages/music_decoder/test/**
