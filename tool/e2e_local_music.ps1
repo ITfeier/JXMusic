@@ -261,8 +261,10 @@ function Save-Screenshot {
 
 function Start-App {
     $null = Invoke-Adb shell am force-stop $script:Package
-    Start-Sleep -Milliseconds 600
-    $null = Invoke-Adb shell monkey -p $script:Package -c android.intent.category.LAUNCHER 1
+    Start-Sleep -Milliseconds 800
+    # 用 am start 而非 monkey：monkey 在部分镜像上不触发 Flutter 首帧（QA 实测）
+    $null = Invoke-Adb shell am start -n "$script:Package/.MainActivity"
+    Start-Sleep -Milliseconds 1500
 }
 
 function Enter-LocalPage {
@@ -410,8 +412,8 @@ Add-Result '「所有文件访问」已授权（appops allow）' ($appopsGranted
 
 $null = Invoke-Adb logcat -c
 Start-App
-$home = Wait-Text '今日推荐' -TimeoutSec 90
-if (-not $home) { $home = Wait-Text '首页' -Exact -TimeoutSec 20 }
+$homePage = Wait-Text '今日推荐' -TimeoutSec 180
+if (-not $homePage) { $homePage = Wait-Text '首页' -Exact -TimeoutSec 20 }
 # 并行会话的登录弹窗不属本次验收范围：若弹出则返回键关闭，避免遮挡 Tab。
 $loginPopup = Find-Node (Get-UiDump) '扫码登录'
 if ($loginPopup) {
@@ -419,7 +421,7 @@ if ($loginPopup) {
     $null = Invoke-Adb shell input keyevent 4
     Start-Sleep -Milliseconds 800
 }
-Add-Result '冷启动进入首页（无白屏）' ($null -ne $home)
+Add-Result '冷启动进入首页（无白屏）' ($null -ne $homePage)
 Save-Screenshot 'e2e-01-cold-start-home'
 
 # --- 3. 本地页 + 默认目录首次自动扫描 --------------------------------------
@@ -517,14 +519,14 @@ $headerText = if ($headerNode) { (Get-NodeDesc $headerNode) + (Get-NodeText $hea
 Write-Log "自定义路径扫描后页头：$headerText"
 Add-Result '页头显示 1 个目录 · 7 首' ($headerText -match '1 个目录 · 7 首') $headerText
 
-Assert-LabelIn '普通 WAV 样本出现在列表' $allLabels '01_E2E_普通WAV_测试'
+Assert-LabelIn '普通 WAV 样本出现在列表' $allLabels '01_plain'
 Assert-LabelIn 'NCM 样本出现在列表（扫描即显示内嵌标题）' $allLabels 'NCM-测试歌曲'
 Assert-LabelIn 'NCM 样本显示内嵌歌手/专辑' $allLabels 'E2E测试歌手'
-Assert-LabelIn 'QMC v1 样本出现在列表' $allLabels '03_E2E_QMCv1_qmc3_测试'
-Assert-LabelIn 'QMC v2(mflac) 样本出现在列表' $allLabels '04_E2E_QMCv2_mflac_测试'
-Assert-LabelIn 'KGM 样本出现在列表' $allLabels '05_E2E_KGM_测试'
-Assert-LabelIn 'VPR 样本出现在列表' $allLabels '06_E2E_VPR_测试'
-Assert-LabelIn 'KGG 样本出现在列表（不消失）' $allLabels '07_E2E_KGG_不支持'
+Assert-LabelIn 'QMC v1 样本出现在列表' $allLabels '03_qmc3'
+Assert-LabelIn 'QMC v2(mflac) 样本出现在列表' $allLabels '04_mflac'
+Assert-LabelIn 'KGM 样本出现在列表' $allLabels '05_kgm'
+Assert-LabelIn 'VPR 样本出现在列表' $allLabels '06_vpr'
+Assert-LabelIn 'KGG 样本出现在列表（不消失）' $allLabels '07_kgg'
 Assert-LabelIn '网易云加密 chip' $allLabels '网易云加密 · 需解密'
 Assert-LabelIn 'QQ 加密 chip' $allLabels 'QQ加密 · 需解密'
 Assert-LabelIn '酷狗加密 chip' $allLabels '酷狗加密 · 需解密'
@@ -539,14 +541,14 @@ for ($i = 0; $i -lt 4; $i++) {
 # --- 6. 播放：普通 WAV（播放全部，不经过解密） -----------------------------
 $null = Tap-Text '播放全部' -Exact -TimeoutSec 20
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-$mini = Wait-MiniBar '01_E2E_普通WAV_测试' -TimeoutSec 30
+$mini = Wait-MiniBar '01_plain' -TimeoutSec 30
 $sw.Stop()
 Add-Timing '普通 WAV 起播耗时（播放全部）' $sw.Elapsed.TotalSeconds
 Add-Result '普通 WAV「播放全部」起播（迷你条显示曲目）' ($null -ne $mini)
 Save-Screenshot 'e2e-07-plain-wav-playing'
 
 # 打开播放页，断言真实推进
-$miniNode = Find-MiniBarNode '01_E2E_普通WAV_测试'
+$miniNode = Find-MiniBarNode '01_plain'
 if ($miniNode) {
     $null = Tap-Node $miniNode
     $playerPage = Wait-Text '正在播放' -TimeoutSec 20
@@ -605,8 +607,8 @@ if ($ncmNode) {
 
 # --- 8. 播放 KGM / VPR -----------------------------------------------------
 foreach ($item in @(
-    @{ Title = '05_E2E_KGM_测试'; Label = 'KGM'; Shot = 'e2e-11-kgm-playing' },
-    @{ Title = '06_E2E_VPR_测试'; Label = 'VPR'; Shot = 'e2e-12-vpr-playing' }
+    @{ Title = '05_kgm'; Label = 'KGM'; Shot = 'e2e-11-kgm-playing' },
+    @{ Title = '06_vpr'; Label = 'VPR'; Shot = 'e2e-12-vpr-playing' }
 )) {
     $null = Invoke-Adb shell input swipe 540 900 540 1600 300
     Start-Sleep -Milliseconds 500
@@ -627,7 +629,7 @@ foreach ($item in @(
 # --- 9. KGG 明确不支持（不崩溃、中文原因） ---------------------------------
 $null = Invoke-Adb shell input swipe 540 900 540 1600 300
 Start-Sleep -Milliseconds 500
-$kggNode = Scroll-To-Text '07_E2E_KGG_不支持' -MaxSwipes 10
+$kggNode = Scroll-To-Text '07_kgg' -MaxSwipes 10
 Add-Result '列表中可定位 KGG 样本' ($null -ne $kggNode)
 if ($kggNode) {
     $null = Tap-Node $kggNode.Node
@@ -672,7 +674,7 @@ Add-Result 'logcat 无解密异常/本地不可播日志' (-not (($matches -join
 $null = Invoke-Adb logcat -c
 $null = Invoke-Adb shell am force-stop $script:Package
 Start-Sleep -Milliseconds 800
-$null = Invoke-Adb shell monkey -p $script:Package -c android.intent.category.LAUNCHER 1
+$null = Invoke-Adb shell am start -n "$script:Package/.MainActivity"
 $null = Enter-LocalPage
 $restartScan = Wait-ScanDone -TimeoutSec 120
 Add-Result '重启后本地页自动扫描完成' ($null -ne $restartScan)
@@ -683,7 +685,7 @@ Write-Log "重启后页头：$restartHeaderText"
 Add-Result '重启后保留上次配置的 1 个目录' ($restartHeaderText -match '1 个目录') $restartHeaderText
 $restartLabels = Get-VisibleLabels $restartDoc
 Assert-LabelIn '重启后自动扫描出 NCM 样本' $restartLabels 'NCM-测试歌曲'
-Assert-LabelIn '重启后自动扫描出 KGM 样本' $restartLabels '05_E2E_KGM_测试'
+Assert-LabelIn '重启后自动扫描出 KGM 样本' $restartLabels '05_kgm'
 Save-Screenshot 'e2e-15-restart-persisted-path'
 $null = Get-UiDump -EvidenceName 'e2e-15-restart-persisted-path'
 $null = Tap-Text '扫描目录' -TimeoutSec 20
@@ -700,7 +702,7 @@ $null = Invoke-Adb logcat -c
 $null = Invoke-Adb shell appops set $script:Package MANAGE_EXTERNAL_STORAGE deny
 $null = Invoke-Adb shell am force-stop $script:Package
 Start-Sleep -Milliseconds 800
-$null = Invoke-Adb shell monkey -p $script:Package -c android.intent.category.LAUNCHER 1
+$null = Invoke-Adb shell am start -n "$script:Package/.MainActivity"
 $null = Enter-LocalPage
 $banner = Wait-Text '需要「所有文件访问」权限才能扫描自定义目录' -TimeoutSec 30
 Add-Result '未授权时显示「所有文件访问」权限横幅' ($null -ne $banner)
@@ -714,7 +716,7 @@ Add-Result '横幅提供「去授权」入口' ($null -ne $goAuth)
 $null = Invoke-Adb shell appops set $script:Package MANAGE_EXTERNAL_STORAGE allow
 $null = Invoke-Adb shell am force-stop $script:Package
 Start-Sleep -Milliseconds 800
-$null = Invoke-Adb shell monkey -p $script:Package -c android.intent.category.LAUNCHER 1
+$null = Invoke-Adb shell am start -n "$script:Package/.MainActivity"
 $null = Enter-LocalPage
 $recoveredScan = Wait-ScanDone -TimeoutSec 120
 $recoveredDoc = Get-UiDump

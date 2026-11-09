@@ -69,13 +69,13 @@ Future<void> main(List<String> args) async {
   final generated = <_Generated>[
     await _write(
       out,
-      '01_E2E_普通WAV_测试.wav',
+      '01_plain.wav',
       wavPayload,
       note: '普通 WAV（不经过解密器，直接交给 libmpv）',
     ),
     await _write(
       out,
-      '02_E2E_NCM_测试.ncm',
+      '02_ncm.ncm',
       buildNcmFixture(
         audioPayload: wavPayload,
         format: 'wav',
@@ -87,13 +87,13 @@ Future<void> main(List<String> args) async {
     ),
     await _write(
       out,
-      '03_E2E_QMCv1_qmc3_测试.qmc3',
+      '03_qmc3.qmc3',
       buildQmcV1Fixture(wavPayload),
       note: 'QQ 音乐 QMC v1（qmc3 静态密钥）',
     ),
     await _write(
       out,
-      '04_E2E_QMCv2_mflac_测试.mflac',
+      '04_mflac.mflac',
       buildQmcV2Fixture(
         audioPayload: wavPayload,
         masterKey: buildQmcMasterKey(256),
@@ -102,7 +102,7 @@ Future<void> main(List<String> args) async {
     ),
     await _write(
       out,
-      '05_E2E_KGM_测试.kgm',
+      '05_kgm.kgm',
       KgmFixture.buildFile(
         payload: kgmPayload,
         pubKey: pubKey,
@@ -113,7 +113,7 @@ Future<void> main(List<String> args) async {
     ),
     await _write(
       out,
-      '06_E2E_VPR_测试.vpr',
+      '06_vpr.vpr',
       KgmFixture.buildFile(
         payload: kgmPayload,
         pubKey: pubKey,
@@ -124,7 +124,7 @@ Future<void> main(List<String> args) async {
     ),
     await _write(
       out,
-      '07_E2E_KGG_不支持.kgg',
+      '07_kgg.kgg',
       KgmFixture.buildFile(
         payload: kgmPayload,
         pubKey: pubKey,
