@@ -1,0 +1,73 @@
+﻿00:00 +0: loading D:/Project/yinyue/JXMusic/test/qr_login_diagnostic_test.dart
+00:00 +0: 网易云扫码轮询（离线） 803 + code 为字符串：MUSIC_U 只在响应头 Set-Cookie 时也能拿到登录态
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=803 message=授权登陆成功 set-cookie=[MUSIC_U,__csrf]
+[JXMusic][网易云登录] 803 登录成功：cookie=[MUSIC_U,__csrf] MUSIC_U=FAKE…ABCD(len=17)
+00:00 +1: 网易云扫码轮询（离线） 803 + 响应体 cookie 字符串（旧接口格式）也能解析
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=803 set-cookie=[]
+[JXMusic][网易云登录] 803 登录成功：cookie=[MUSIC_U,__csrf,os] MUSIC_U=len=7
+00:00 +2: 网易云扫码轮询（离线） 803 但缺少 MUSIC_U：返回 null 且 lastError 指出缺凭证
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=803 message=授权登录成功 set-cookie=[]
+[JXMusic][网易云登录] 803 登录成功：cookie=[] MUSIC_U=(空)
+00:00 +3: 网易云扫码轮询（离线） 800 二维码过期：lastError 明确，不抛异常
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=800 message=二维码过期 set-cookie=[]
+00:00 +4: 网易云扫码轮询（离线） 802 已扫码待确认：给出可见提示（qrHint，非错误）
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=802 message=待确认 set-cookie=[]
+00:00 +5: 网易云扫码轮询（离线） 801 等待扫码：静默等待（lastError 为 null）
+[JXMusic][网易云登录] eapi 轮询 HTTP=200 code=801 message=等待扫码 set-cookie=[]
+00:00 +6: 网易云扫码轮询（离线） 网络异常：lastError 具体原因，不抛异常
+[JXMusic][网易云登录] 轮询异常：网易云扫码轮询失败：网络不可达（connectionError）
+00:00 +7: QQ 扫码兑换（离线） check_sig 拿到 p_skey -> authorize code -> QQLogin 全链路成功
+[JXMusic][QQ登录] 取码 HTTP=200 qrsig=QQQQ…QQQQ(len=44) PNG=40字节 set-cookie=[qrsig]
+[JXMusic][QQ登录] 轮询 code=0 扫码确认；跳转URL=ptlogin2.qq.com/check_sig?uin=o012…6789(len=11)&service=ptqr…ogin(len=9)&nodirect=len=1&ptsigx=PTSI…C123(len=13)&s_url=http…jump(len=40) uin=o012…6789(len=11) ptsigx=PTSI…C123(len=13) 昵称=扫码昵称
+[JXMusic][QQ登录] check_sig#1(无Cookie) 请求URL(原始，仅 logcat): https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o0123456789&pttype=1&service=ptqrlogin&nodirect=0&ptsigx=PTSIGX_ABC123&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&ptlang=2052&ptredirect=100&aid=716027609&daid=383&j_later=0&low_login_hour=0&regmaster=0&pt_login_type=3&pt_aid=0&pt_aaid=16&pt_light=0&pt_3rd_aid=100497308
+[JXMusic][QQ登录] check_sig#1(无Cookie) → HTTP 302 location=https://graph.qq.com/oauth2.0/login_jump?uin=o0123456789
+[JXMusic][QQ登录] check_sig#1(无Cookie) Set-Cookie原始: p_skey=FAKE…1234(len=15) | skey=FAKE…SKEY(len=9)
+[JXMusic][QQ登录] check_sig#1(无Cookie) jar=[p_skey,skey] p_skey=true body=
+[JXMusic][QQ登录] check_sig 阶段结束：p_skey=true jar=[p_skey,skey] p_skey值=FAKE…1234(len=15) OAuth链入口=graph.qq.com/oauth2.0/login_jump?uin=o012…6789(len=11)
+[JXMusic][QQ登录] authorize POST HTTP 302 redirect_uri=https://y.qq.com/portal/wx_redirect.html…2F%252Fy.qq.com%252F(len=90) Location全文=https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&code=FAKE_CODE_XYZ code=FAKE…_XYZ(len=13)
+[JXMusic][QQ登录] 授权 code 已取得（FAKE…_XYZ(len=13)），进入 QQLogin
+[JXMusic][QQ登录] QQLogin[https://u.y.qq.com/cgi-bin/musicu.fcg] HTTP 200 外层code=0 业务code=0 dataKeys=[musicid,musickey,nick]
+[JXMusic][QQ登录] 登录成功：昵称=数据昵称 musicid=len=6 musickey=MUSI…_ABC(len=12) 写入 cookie=[uin,qqmusic_uin,qm_keyst,qqmusic_key]
+00:00 +8: QQ 扫码兑换（离线） check_sig 无 p_skey 时：带 jar 跟随 login_jump 链取 code -> QQLogin 成功
+[JXMusic][QQ登录] 取码 HTTP=200 qrsig=QQQQ…QQQQ(len=44) PNG=40字节 set-cookie=[qrsig]
+[JXMusic][QQ登录] 轮询 code=0 扫码确认；跳转URL=ptlogin2.qq.com/check_sig?uin=o012…6789(len=11)&service=ptqr…ogin(len=9)&nodirect=len=1&ptsigx=PTSI…C123(len=13)&s_url=http…jump(len=40) uin=o012…6789(len=11) ptsigx=PTSI…C123(len=13) 昵称=扫码昵称
+[JXMusic][QQ登录] check_sig#1(无Cookie) 请求URL(原始，仅 logcat): https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o0123456789&pttype=1&service=ptqrlogin&nodirect=0&ptsigx=PTSIGX_ABC123&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&ptlang=2052&ptredirect=100&aid=716027609&daid=383&j_later=0&low_login_hour=0&regmaster=0&pt_login_type=3&pt_aid=0&pt_aaid=16&pt_light=0&pt_3rd_aid=100497308
+[JXMusic][QQ登录] check_sig#1(无Cookie) → HTTP 302 location=https://graph.qq.com/oauth2.0/login_jump?uin=o0123456789
+[JXMusic][QQ登录] check_sig#1(无Cookie) Set-Cookie原始: p_skey=(空) | pt4_token=FAKE…OKEN(len=14)
+[JXMusic][QQ登录] check_sig#1(无Cookie) jar=[p_skey,pt4_token] p_skey=false body=
+[JXMusic][QQ登录] check_sig 阶段结束：p_skey=false jar=[p_skey,pt4_token] p_skey值=(空) OAuth链入口=graph.qq.com/oauth2.0/login_jump?uin=o012…6789(len=11)
+[JXMusic][QQ登录] 尝试跟随 OAuth 链取 code：https://graph.qq.com/oauth2.0/login_jump?uin=o0123456789
+[JXMusic][QQ登录] OAuth链#1 HTTP=302 jar=[p_skey,pt4_token] p_skey=(空)
+[JXMusic][QQ登录] OAuth链#1 Location全文=https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/&code=CHAIN_CODE_456
+[JXMusic][QQ登录] OAuth链#1 Set-Cookie原始: (无)
+[JXMusic][QQ登录] OAuth链#1 body前400=
+[JXMusic][QQ登录] OAuth链#1 code: location=CHAI…_456(len=14) body=(空)
+[JXMusic][QQ登录] OAuth 链取到 code=CHAI…_456(len=14)
+[JXMusic][QQ登录] 授权 code 已取得（CHAI…_456(len=14)），进入 QQLogin
+[JXMusic][QQ登录] QQLogin[https://u.y.qq.com/cgi-bin/musicu.fcg] HTTP 200 外层code=0 业务code=0 dataKeys=[musicid,musickey,nick]
+[JXMusic][QQ登录] 登录成功：昵称=链上用户 musicid=len=6 musickey=KEY_…HAIN(len=14) 写入 cookie=[uin,qqmusic_uin,qm_keyst,qqmusic_key]
+00:00 +9: QQ 扫码兑换（离线） check_sig 始终不返回 p_skey：返回 null 且 lastError 含具体原因
+[JXMusic][QQ登录] 取码 HTTP=200 qrsig=QQQQ…QQQQ(len=44) PNG=40字节 set-cookie=[qrsig]
+[JXMusic][QQ登录] 轮询 code=0 扫码确认；跳转URL=ptlogin2.qq.com/check_sig?uin=o012…6789(len=11)&service=ptqr…ogin(len=9)&nodirect=len=1&ptsigx=PTSI…C123(len=13)&s_url=http…jump(len=40) uin=o012…6789(len=11) ptsigx=PTSI…C123(len=13) 昵称=扫码昵称
+[JXMusic][QQ登录] check_sig#1(无Cookie) 请求URL(原始，仅 logcat): https://ssl.ptlogin2.graph.qq.com/check_sig?uin=o0123456789&pttype=1&service=ptqrlogin&nodirect=0&ptsigx=PTSIGX_ABC123&s_url=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&ptlang=2052&ptredirect=100&aid=716027609&daid=383&j_later=0&low_login_hour=0&regmaster=0&pt_login_type=3&pt_aid=0&pt_aaid=16&pt_light=0&pt_3rd_aid=100497308
+[JXMusic][QQ登录] check_sig#1(无Cookie) → HTTP 302 location=https://www.qq.com/
+[JXMusic][QQ登录] check_sig#1(无Cookie) Set-Cookie原始: (无)
+[JXMusic][QQ登录] check_sig#1(无Cookie) jar=[] p_skey=false body=
+[JXMusic][QQ登录] check_sig 阶段结束：p_skey=false jar=[] p_skey值=(空) OAuth链入口=www.qq.com/?
+[JXMusic][QQ登录] 尝试跟随 OAuth 链取 code：https://www.qq.com/
+[JXMusic][QQ登录] OAuth链#1 HTTP=200 jar=[] p_skey=(空)
+[JXMusic][QQ登录] OAuth链#1 Location全文=
+[JXMusic][QQ登录] OAuth链#1 Set-Cookie原始: (无)
+[JXMusic][QQ登录] OAuth链#1 body前400={}
+[JXMusic][QQ登录] OAuth链#1 code: location=(空) body=(空)
+[JXMusic][QQ登录] 兜底：p_skey=(空) 时也尝试 authorize
+[JXMusic][QQ登录] authorize POST HTTP 200 redirect_uri=https://y.qq.com/portal/wx_redirect.html…2F%252Fy.qq.com%252F(len=90) Location全文= code=(空)
+[JXMusic][QQ登录] authorize GET HTTP 200 redirect_uri=https://y.qq.com/portal/wx_redirect.html…2F%252Fy.qq.com%252F(len=90) Location全文= code=(空)
+[JXMusic][QQ登录] authorize POST HTTP 200 redirect_uri=https://y.qq.com/portal/wx_redirect.html…rl=https://y.qq.com/(len=76) Location全文= code=(空)
+[JXMusic][QQ登录] authorize GET HTTP 200 redirect_uri=https://y.qq.com/portal/wx_redirect.html…rl=https://y.qq.com/(len=76) Location全文= code=(空)
+[JXMusic][QQ登录] QQ 扫码已确认，但未取到授权 code（p_skey=空；OAuth链=已尝试；check_sig: check_sig#1(无Cookie) HTTP302→www.qq.com/? 无p_skey）
+00:00 +10: QQ 扫码兑换（离线） 未取码时用无效 key 轮询：直接返回 null，不发请求
+00:00 +11: 网易云 eapi 加密（固定向量） unikey 请求 params 与参考实现一致
+00:00 +12: 网易云 eapi 加密（固定向量） client/login 请求 params 与参考实现一致
+00:00 +13: All tests passed!
+EXITCODE=0

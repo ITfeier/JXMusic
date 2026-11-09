@@ -1,0 +1,34 @@
+﻿flutter : Waiting for another flutter command to release the startup lock...
+所在位置 行:1 字符: 248
++ ... $out="docs/projects/扫码登录修复/qa-logs"; flutter analyze lib 2>&1 | Out-F ...
++                                          ~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Waiting for ano...startup lock...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Resolving dependencies...
+Downloading packages...
+  archive 4.5.2 (4.6.0 available)
+  flutter_riverpod 2.6.1 (3.5.0 available)
+  jni 1.1.1 (1.1.2 available)
+  material_color_utilities 0.13.0 (0.13.1 available)
+  media_kit_video 1.3.1 (2.0.1 available)
+  permission_handler 11.4.0 (13.0.2 available)
+  permission_handler_android 12.1.0 (14.1.1 available)
+  permission_handler_apple 9.6.4 (9.6.5 available)
+  permission_handler_windows 0.2.2 (0.2.4 available)
+  petitparser 7.0.2 (7.1.0 available)
+  pointycastle 3.9.1 (4.0.0 available)
+  qr 3.0.3 (4.0.1 available)
+  riverpod 2.6.1 (3.5.0 available)
+  screen_retriever 0.2.2 (0.3.1 available)
+  synchronized 3.5.0 (3.6.1 available)
+  test_api 0.7.12 (0.7.15 available)
+  vector_math 2.4.0 (2.4.4 available)
+  window_manager 0.4.3 (0.6.0 available)
+  xml 7.0.1 (7.1.0 available)
+Got dependencies!
+19 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Analyzing lib...                                                
+No issues found! (ran in 3.5s)
+EXITCODE=0

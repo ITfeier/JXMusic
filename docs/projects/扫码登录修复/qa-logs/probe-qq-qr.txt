@@ -1,0 +1,32 @@
+﻿=== 1) 原始 ptqrshow 取码 ===
+HTTP=200  PNG字节=435  尺寸=111x111  魔数=89504e47  qrsig长度=128
+
+=== 2) 原始 ptqrlogin 轮询（未扫码应为 code 66）===
+HTTP=200  响应=ptuiCB('66','0','','0','二维码未失效。', '')
+ptuiCB code=66  (等待态，符合预期)
+
+=== 3) 真实 QQMusicApi 实现 ===
+[JXMusic][QQ登录] 取码 HTTP=200 qrsig=1f3b…2141(len=128) PNG=445字节 set-cookie=[qrsig]
+createQrLogin(): qrUrl 前缀=data:image/png;base64,iVBORw0KGgoAAAANSU...  base64 解码后 PNG 字节=445  尺寸=111x111
+                  key(qrsig)长度=128
+[JXMusic][QQ登录] 轮询 code=66（等待扫码/待确认）
+pollQrLogin() => null（等待扫码，符合预期）
+
+=== 4) 兑换链路候选端点可达性（假参数，仅证明端点/风控，不证明业务成功）===
+check_sig  : HTTP=302  location=https://www.qq.com
+authorize  : HTTP=302  location=https://graph.qq.com/oauth2.0/show?which=Login&display=pc&client_id=100497308&src=1&state=state&response_type=code&scope
+QQLogin    : https://u.y.qq.com/cgi-bin/musicu.fcg -> HTTP=200 外层code=0 业务code=1000
+QQLogin    : https://u6.y.qq.com/cgi-bin/musicu.fcg -> HTTP=200 外层code=0 业务code=1000
+QQLogin    : https://u.y.qq.com/cgi-bin/musics.fcg -> HTTP=200 外层code=2000 业务code=2000
+（假 code=fake：主/备1 返回业务 code=1000 属预期；备2 musics.fcg 需 zzc sign，返回 2000）
+（真机扫码后的 check_sig→authorize→QQLogin 全链路未端到端验证）
+
+结果：PASS（取码为真二维码，轮询处于等待态）
+dart : Running build hooks...Running build hooks...
+所在位置 行:1 字符: 211
++ ... :\Project\yinyue\JXMusic; dart run tool/check_qq_qr.dart 2>&1 | Out-F ...
++                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Running build h... build hooks...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+EXITCODE=0

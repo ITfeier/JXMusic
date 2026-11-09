@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:pointycastle/export.dart';
 import '../../models/song.dart';
 import '../../models/playlist.dart';
 import 'music_api.dart';
@@ -160,7 +163,10 @@ class NeteaseApi implements MusicPlatformApi {
     return '$prefix：$error';
   }
 
-  /// 合并响应头里的 Set-Cookie（803 成功时 MUSIC_U 在响应头，不在响应体）
+  /// 合并响应头里的 Set-Cookie（803 成功时 MUSIC_U 在响应头，不在响应体）。
+  ///
+  /// 与 qq_api 保持一致：**忽略值为空的 Set-Cookie**（删除 cookie 指令），
+  /// 避免同名清空行覆盖已拿到的有效值（如 MUSIC_U / __csrf）。
   void _collectSetCookies(Headers headers, Map<String, String> into) {
     final list = headers['set-cookie'];
     if (list == null) return;
@@ -168,7 +174,10 @@ class NeteaseApi implements MusicPlatformApi {
       final seg = item.split(';').first.trim();
       final eq = seg.indexOf('=');
       if (eq <= 0) continue;
-      into[seg.substring(0, eq).trim()] = seg.substring(eq + 1).trim();
+      final name = seg.substring(0, eq).trim();
+      final value = seg.substring(eq + 1).trim();
+      if (name.isEmpty || value.isEmpty) continue;
+      into[name] = value;
     }
   }
 
@@ -259,11 +268,17 @@ class NeteaseApi implements MusicPlatformApi {
 
     // 1) 公开 GET 接口：不需要 weapi 加密，免费/低价歌曲可直接拿直链
     //    （2026-11 实测：fee=0/8 返回 200 + url；VIP fee=1 返回 code=-110 需登录）
+    //    登录后带上 MUSIC_U 等会话 cookie（只发 music.163.com 官方域），
+    //    否则 VIP 歌曲仍按未登录处理。
     for (final br in const [128000, 320000]) {
       try {
         final resp = await JXHttp.dio.get(
           '$_base/song/enhance/player/url',
           queryParameters: {'ids': '[$sid]', 'br': br},
+          options: Options(headers: {
+            if (_cookies.isNotEmpty) 'Cookie': _cookieStr(),
+            'Referer': 'https://music.163.com/',
+          }),
         );
         final data = resp.data;
         final list = data is Map ? data['data'] as List? : null;
@@ -401,35 +416,126 @@ class NeteaseApi implements MusicPlatformApi {
     }
   }
 
-  // ---- 扫码登录（公开二维码登录流程）----
+  // ---- 扫码登录（eapi 协议；2026-11 真机实扫：web 模拟会被 8821 拒绝）----
   //
-  // 2026-11 实测（本机直连）：`/api/login/qrcode/unikey` 与
-  // `/api/login/qrcode/client/login` 仍可用，未扫码时返回
-  // `{"code":801,"message":"等待扫码"}`。旧实现的问题：
-  //   1) 轮询用 `resp.data['code'] as int?` 强转，code 为字符串时直接抛 TypeError，
-  //      异常被设置页 `_poll` 的 catch 静默吞掉 -> 永远停在等待态；
-  //   2) 只读响应体 `cookie` 字段，而 2026 现行接口 803 的 MUSIC_U 在**响应头
-  //      Set-Cookie** 里（见 docs/接口清单.md 记录），导致"登录成功但没有凭证"；
-  //   3) 无 lastError、无日志，失败不可见。
+  // 真机实扫证据（2026-11-09）：手机确认后旧 /api 链路返回
+  // `code=8821 message=请切换其他登录方式或升级新版本再试`。官方已拒绝
+  // 「web 模拟」扫码，必须按官方客户端形态请求（参考实现：
+  // Yuanlang3/dsh-netease-music-plugin lib/index.js 的 eapiPost/qr-key/qr-check）：
+  //   · POST /eapi/login/qrcode/unikey、/eapi/login/qrcode/client/login
+  //   · body: params=<AES-128-ECB 明文 hex 大写>，明文 =
+  //     apiPath-36cd479b6b5-json-36cd479b6b5-md5(
+  //     'nobody'+apiPath+'use'+json+'md5forencrypt')，apiPath **不含 /eapi**
+  //   · 请求头带官方客户端 UA + os/appver/deviceId 等 Cookie
+  //     （unikey 与 poll 必须同一个 deviceId）
+  //   · data.type = "3"；二维码内容仍为 https://music.163.com/login?codekey=<unikey>
+  static const String _eapiKey = 'e82ckenh8dichen8';
+  static const String _eapiUa =
+      'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)';
+  static const String _eapiUnikeyPath = '/api/login/qrcode/unikey';
+  static const String _eapiCheckPath = '/api/login/qrcode/client/login';
+
+  /// 本次二维码登录的设备指纹（unikey 与 poll 共用）
+  String? _qrDeviceId;
+
+  /// 扫码进度提示（801 等待 / 802 已扫待确认），非错误；供设置页展示
+  String? _qrHint;
+  String? get qrHint => _qrHint;
+
+  static String _md5Hex(String text) =>
+      md5.convert(utf8.encode(text)).toString();
+
+  /// AES-128-ECB + PKCS7，输出**大写** hex（与官方 eapi 一致）
+  static String _aesEcbHex(String plainText) {
+    final cipher = ECBBlockCipher(AESEngine())
+      ..init(true, KeyParameter(Uint8List.fromList(utf8.encode(_eapiKey))));
+    final data = Uint8List.fromList(utf8.encode(plainText));
+    final pad = 16 - (data.length % 16);
+    final padded = Uint8List(data.length + pad)..setRange(0, data.length, data);
+    for (var i = data.length; i < padded.length; i++) {
+      padded[i] = pad;
+    }
+    final out = Uint8List(padded.length);
+    for (var offset = 0; offset < padded.length; offset += 16) {
+      cipher.processBlock(padded, offset, out, offset);
+    }
+    return out
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join()
+        .toUpperCase();
+  }
+
+  /// eapi 加密：返回 params 明文 hex（公开静态方法，便于单测固定向量断言）
+  static String eapiParams(String apiPath, Map<String, dynamic> data) {
+    final text = jsonEncode(data);
+    final digest = _md5Hex('nobody${apiPath}use${text}md5forencrypt');
+    return _aesEcbHex('$apiPath-36cd479b6b5-$text-36cd479b6b5-$digest');
+  }
+
+  static String _randomDeviceId() {
+    final rng = math.Random.secure();
+    const chars = '0123456789ABCDEF';
+    return List<String>.generate(52, (_) => chars[rng.nextInt(16)]).join();
+  }
+
+  /// 官方客户端指纹 Cookie（key/value 都 URI 编码；每次请求刷新 requestId/buildver）
+  static String _qrCookieHeader(String deviceId) {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final requestId =
+        '${nowMs}_${math.Random().nextInt(1000).toString().padLeft(4, '0')}';
+    final header = <String, String>{
+      'osver': 'Microsoft-Windows-10-Professional-build-19045-64bit',
+      'deviceId': deviceId,
+      'os': 'pc',
+      'appver': '3.1.17.204416',
+      'versioncode': '140',
+      'mobilename': '',
+      'buildver': '${nowMs ~/ 1000}',
+      'resolution': '1920x1080',
+      '__csrf': '',
+      'channel': 'netease',
+      'requestId': requestId,
+    };
+    return header.entries
+        .map((e) =>
+            '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+        .join('; ');
+  }
+
+  /// eapi POST：URL 用 /eapi 前缀，加密用 /api 路径
+  Future<Response<dynamic>> _eapiPost(
+      String apiPath, Map<String, dynamic> data, String deviceId) {
+    final url = '$_musicBase${apiPath.replaceFirst('/api/', '/eapi/')}';
+    return JXHttp.dio.post(url,
+        data: {'params': eapiParams(apiPath, data)},
+        options: Options(
+          contentType: 'application/x-www-form-urlencoded',
+          validateStatus: (s) => s != null && s < 500,
+          receiveTimeout: const Duration(seconds: 15),
+          headers: {
+            'User-Agent': _eapiUa,
+            'Cookie': _qrCookieHeader(deviceId),
+            'Referer': 'https://music.163.com/',
+          },
+        ));
+  }
+
   @override
   Future<({String qrUrl, String key})> createQrLogin() async {
-    // 旧接口 /login/qr/key + /login/qr/create 已下线（302→404），
-    // 改用公开接口 api/login/qrcode/unikey 获取 unikey，二维码内容为官方登录页。
     _lastError = null;
+    _qrHint = null;
+    final deviceId = _randomDeviceId();
+    _qrDeviceId = deviceId;
     try {
-      final resp = await JXHttp.dio.post('$_musicBase/api/login/qrcode/unikey',
-          data: {'type': 1},
-          options: Options(
-            contentType: 'application/x-www-form-urlencoded',
-            receiveTimeout: const Duration(seconds: 10),
-            validateStatus: (s) => s != null && s < 500,
-          ));
+      final resp = await _eapiPost(_eapiUnikeyPath, {'type': '3'}, deviceId);
       final data = resp.data is Map ? resp.data as Map : const {};
       final key = '${data['unikey'] ?? ''}'.trim();
-      _log('取码 HTTP=${resp.statusCode} code=${data['code']} unikey=${_mask(key)}');
-      if (key.isEmpty || key == 'null') {
-        _lastError =
-            '网易云取码失败（HTTP ${resp.statusCode}，响应缺少 unikey，接口可能已变更）';
+      _log('eapi 取码 HTTP=${resp.statusCode} code=${data['code']} '
+          'unikey=${_mask(key)} deviceId=${_mask(deviceId)} '
+          'set-cookie=[${_cookieNames(resp.headers)}]');
+      if (resp.statusCode != 200 || key.isEmpty || key == 'null') {
+        _lastError = '网易云取码失败（HTTP ${resp.statusCode}，响应缺少 unikey'
+            '${data['message'] == null ? '' : '：${data['message']}'}）';
         _log(_lastError!);
         return (qrUrl: '', key: '');
       }
@@ -444,40 +550,44 @@ class NeteaseApi implements MusicPlatformApi {
   @override
   Future<AccountSession?> pollQrLogin(String key) async {
     if (key.isEmpty) return null;
+    final deviceId = _qrDeviceId ?? _randomDeviceId();
+    _qrDeviceId = deviceId;
     try {
-      final resp = await JXHttp.dio.post(
-          '$_musicBase/api/login/qrcode/client/login',
-          data: {'key': key, 'type': 1},
-          options: Options(
-            contentType: 'application/x-www-form-urlencoded',
-            receiveTimeout: const Duration(seconds: 10),
-            validateStatus: (s) => s != null && s < 500,
-          ));
+      final resp =
+          await _eapiPost(_eapiCheckPath, {'key': key, 'type': '3'}, deviceId);
       final data = resp.data is Map ? resp.data as Map : const {};
       final code = _codeOf(data['code']);
       final message = '${data['message'] ?? data['msg'] ?? ''}'.trim();
-      _log('轮询 HTTP=${resp.statusCode} code=$code'
-          '${message.isEmpty ? '' : ' message=$message'}');
+      _log('eapi 轮询 HTTP=${resp.statusCode} code=$code'
+          '${message.isEmpty ? '' : ' message=$message'} '
+          'set-cookie=[${_cookieNames(resp.headers)}]');
       switch (code) {
         case 801: // 等待扫码
+          _qrHint = null;
           _lastError = null;
           return null;
-        case 802: // 已扫码，等待手机端确认
-          _lastError = '已扫码，请在手机上确认登录';
+        case 802: // 已扫码，等待手机端确认/授权中
+          _qrHint = '已扫码，请在手机上确认登录';
+          _lastError = null;
           return null;
         case 800: // 二维码过期
+          _qrHint = null;
           _lastError = '二维码已过期，请关闭后重新获取';
+          return null;
+        case 8821: // 风控 / 协议不符（2026-11 真机实扫出现过）
+          _qrHint = null;
+          _lastError = '账号或网络触发风控（code 8821），请稍后重试或更换网络';
           return null;
         case 803: // 登录成功
           break;
         default:
+          _qrHint = null;
           _lastError = '网易云扫码登录失败（HTTP ${resp.statusCode}，code=$code'
               '${message.isEmpty ? '' : '，${_short(message, 120)}'}）';
           return null;
       }
 
-      // 803：MUSIC_U 可能在响应体 cookie 字段（旧接口），也可能只在响应头
-      // Set-Cookie（2026 现行接口），两者都收集。
+      // 成功判定：code=803，或任一 cookie 通道出现 MUSIC_U（响应体 + Set-Cookie 都收）
       final cookies = <String, String>{};
       final rawCookie = data['cookie'] ?? data['token'];
       if (rawCookie is String && rawCookie.trim().isNotEmpty) {
@@ -485,7 +595,8 @@ class NeteaseApi implements MusicPlatformApi {
       }
       _collectSetCookies(resp.headers, cookies);
       final musicU = cookies['MUSIC_U'] ?? cookies['MUSIC_A'] ?? '';
-      _log('803 登录成功：cookie=[${cookies.keys.join(',')}] MUSIC_U=${_mask(musicU)}');
+      _log('803 登录成功：cookie=[${cookies.keys.join(',')}] '
+          'MUSIC_U=${_mask(musicU)}');
       if (musicU.isEmpty) {
         _lastError = '网易云登录成功但响应缺少 MUSIC_U 登录凭证（接口可能已变更）';
         return null;
@@ -496,6 +607,7 @@ class NeteaseApi implements MusicPlatformApi {
       if (nickname.isEmpty) nickname = '${data['nickname'] ?? ''}'.trim();
       if (nickname.isEmpty) nickname = '网易云用户';
       _cookies = Map<String, String>.of(cookies);
+      _qrHint = null;
       _lastError = null;
       return AccountSession(
         platform: platform,
@@ -503,11 +615,18 @@ class NeteaseApi implements MusicPlatformApi {
         nickname: nickname,
       );
     } catch (e) {
+      _qrHint = null;
       _lastError = _describeError(e, '网易云扫码轮询失败');
       _log('轮询异常：$_lastError');
       return null;
     }
   }
+
+  /// 响应头 Set-Cookie 里的 cookie 名称列表（仅用于日志）
+  static String _cookieNames(Headers headers) => (headers['set-cookie'] ??
+          const <String>[])
+      .map((e) => e.split(';').first.split('=').first.trim())
+      .join(',');
 
   /// 解析 cookie 字符串（兼容 `a=b; c=d`、`a=b;;;c=d`，值里允许含 `=`）
   Map<String, String> _parseCookies(String raw) {
@@ -527,6 +646,10 @@ class NeteaseApi implements MusicPlatformApi {
     _cookies = Map<String, String>.of(session?.cookies ?? const {});
   }
 
+  /// 会话 cookie 拼成请求头值（MUSIC_U/__csrf 等；只发 music.163.com 官方域）
+  String _cookieStr() =>
+      _cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
+
   /// weapi 加密请求
   Future<Map<String, dynamic>> _weapi(String path, Map<String, dynamic> data) async {
     final enc = NeteaseCrypto.weapi(data);
@@ -536,10 +659,7 @@ class NeteaseApi implements MusicPlatformApi {
       options: Options(
         contentType: 'application/x-www-form-urlencoded',
         headers: {
-          if (_cookies.isNotEmpty)
-            'Cookie': _cookies.entries
-                .map((e) => '${e.key}=${e.value}')
-                .join('; '),
+          if (_cookies.isNotEmpty) 'Cookie': _cookieStr(),
           'Referer': 'https://music.163.com/',
         },
       ),

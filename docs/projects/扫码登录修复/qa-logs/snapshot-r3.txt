@@ -1,0 +1,98 @@
+﻿QA 第三轮复核快照 2026-11-09 19:06:41
+HEAD 783811d6dbda3a759ac95ceeaea4062805bd0080
+== git status --short ==
+ M "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/\344\277\256\345\244\215\346\212\245\345\221\212-\345\256\236\346\211\253.md"
+ M lib/services/api/netease_api.dart
+ M lib/services/api/qq_api.dart
+ M lib/ui/settings_page.dart
+ M test/qr_login_diagnostic_test.dart
+ M tool/check_netease_qr.dart
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/qa-logs/"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/screenshots/05-\347\254\254\344\272\214\350\275\256-\347\275\221\346\230\223\344\272\221eapi\346\211\253\347\240\201\345\274\271\347\252\227.png"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/screenshots/06-\347\275\221\346\230\223\344\272\221\347\231\273\345\275\225\346\210\220\345\212\237-\351\207\215\345\220\257\345\220\216\344\273\215\345\267\262\347\231\273\345\275\225.png"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/screenshots/07-QQ\347\231\273\345\275\225\346\210\220\345\212\237.png"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/screenshots/08-QQ+\347\275\221\346\230\223\344\272\221\345\217\214\345\271\263\345\217\260\347\231\273\345\275\225\346\210\220\345\212\237-\351\207\215\345\220\257\345\220\216.png"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/\346\265\213\350\257\225\346\212\245\345\221\212-\345\256\236\346\211\253\351\252\214\346\224\266.md"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/\350\257\201\346\215\256-logcat-QQ\347\231\273\345\275\225\346\210\220\345\212\237.txt"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/\350\257\201\346\215\256-logcat-\347\275\221\346\230\223\344\272\2218821\344\270\216eapi.txt"
+?? "docs/projects/\346\211\253\347\240\201\347\231\273\345\275\225\344\277\256\345\244\215/\350\257\201\346\215\256-logcat-\347\275\221\346\230\223\344\272\221\347\231\273\345\275\225\346\210\220\345\212\237.txt"
+?? "docs/projects/\346\222\255\346\224\276\345\244\261\350\264\245\350\257\212\346\226\255/"
+?? tool/check_play_matrix.dart
+== 改动文件 SHA256 ==
+E8F778DC582A13C6EC12679B7D88F9057001A586D8C0C8DF847B39B86C3CBF0B  lib/services/api/qq_api.dart
+9D433DFE71E9E463DB4BD8324476D04B6D66DB16D27CE93FABF2650D813849D0  lib/services/api/netease_api.dart
+4216E69714876D0194BDF18473FEAFF5C6B0FB61C24C43B4C3CB0DEED4AA6C20  lib/ui/settings_page.dart
+0828880C57D322BC572B0B5375966DBEB6C9A7FCF6ECCF1E1BAD03051B9C7082  test/qr_login_diagnostic_test.dart
+38259533CCCF306DC9EA9AEA0705CF258E6E40C83B6A9855166745AA532743F8  tool/check_netease_qr.dart
+== 敏感日志扫描（qq_api.dart）==
+162: void _log(String message) {
+510: _log('取码 HTTP=${resp.statusCode} qrsig=${_mask(qrsig)} '
+516: _log(_lastError!);
+523: _log('取码异常：$_lastError');
+588: _log('轮询响应无法解析：len=${text.length}');
+594: _log('轮询 code=$code（等待扫码/待确认）');
+599: _log('轮询 code=65（二维码已过期）');
+604: _log('轮询 code=7 msg=${_short(cb.message)}');
+611: _log('轮询 code=$code msg=${_short(cb.message)}');
+630: _log('轮询 code=0 扫码确认；跳转URL=${_maskUrl(jumpUrl)} '
+639: _log('警告：跳转 URL 未携带 uin，继续用服务端 URL 尝试 check_sig');
+648: _log(_lastError!);
+664: _log('登录凭证不完整：musicid=${_mask(musicid)} musickey=${_mask(musickey)}');
+680: _log('登录成功：昵称=$nick musicid=${_mask(musicid)} '
+690: _log('轮询异常：$_lastError');
+771: _log('$tag 请求: ${_maskUrl(rawUrl)} len=${rawUrl.length}');
+781: _log('$tag → HTTP $status location=${_maskUrl(location)} len=${location.length}');
+782: _log('$tag Set-Cookie原始: ${_setCookieDigest(current.headers)}');
+783: _log('$tag jar=[${jar.keys.join(',')}] p_skey=$hasPskey bodyLen=${bodyText.length}');
+855: _log('check_sig#1 异常：${_describeError(e, '')}');
+897: _log('check_sig 阶段结束：p_skey=$gotPskey '
+912: _log('尝试跟随 OAuth 链取 code：${_maskUrl(chainStart)} '
+917: _log('OAuth 链取到 code=${_mask(code)}');
+922: _log('OAuth 链后补发 p_skey=${_mask(ptCookies['p_skey'])}，重试 authorize');
+926: _log('兜底：p_skey=${_mask(ptCookies['p_skey'])} 时也尝试 authorize');
+935: _log(_lastError!);
+939: _log('授权 code 已取得（${_mask(code)}），进入 QQLogin');
+967: _log('QQLogin[$base] HTTP ${resp.statusCode} 外层code=$outerCode '
+976: _log(_lastError!);
+982: _log(_lastError!);
+1030: _log(_lastError!);
+1035: _log('authorize POST HTTP ${resp?.statusCode ?? '-'} '
+1051: _log(_lastError!);
+1057: _log('authorize GET HTTP ${resp?.statusCode ?? '-'} '
+1090: _log('OAuth链#$hop 请求异常：${_describeError(e, '')}');
+1099: _log('OAuth链#$hop 请求=${_maskUrl(url)}');
+1100: _log('OAuth链#$hop HTTP=$status '
+1102: _log('OAuth链#$hop Location=${_maskUrl(location)} '
+1104: _log('OAuth链#$hop Set-Cookie原始: ${_setCookieDigest(resp.headers)}');
+1105: _log('OAuth链#$hop bodyLen=${body.length} '
+1109: _log('OAuth链#$hop code: location=${_mask(fromLocation)} '
+== 危险明文模式扫描（应为 0 命中：Location全文/请求URL(原始)/body前400/_short(location|chainStart|url）==
+(0 命中)
+== 官方域扫描 ==
+https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg
+https://c.y.qq.com/soso/fcgi-bin/client_search_cp
+https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg
+https://c.y.qq.com/v8/fcg-bin/fcg_v8_toplist_cp.fcg
+https://graph.qq.com/
+https://graph.qq.com/oauth2.0/authorize
+https://graph.qq.com/oauth2.0/login_jump
+https://music.163.com
+https://music.163.com/
+https://music.163.com/，
+https://music.163.com/api
+https://music.163.com/api/login/qrcode/client/login
+https://music.163.com/eapi/login/qrcode/client/login
+https://music.163.com/eapi/login/qrcode/unikey
+https://music.163.com/login?codekey=$key
+https://music.163.com/login?codekey=<unikey>
+https://music.163.com/weapi
+https://ssl.ptlogin2.graph.qq.com/check_sig
+https://ssl.ptlogin2.qq.com/ptqrlogin
+https://ssl.ptlogin2.qq.com/ptqrshow
+https://u.y.qq.com/cgi-bin/musics.fcg
+https://u.y.qq.com/cgi-bin/musicu.fcg
+https://u6.y.qq.com/cgi-bin/musicu.fcg
+https://xui.ptlogin2.qq.com/
+https://y.qq.com/
+https://y.qq.com/music/photo_new/T002R300x300M000${m[
+https://y.qq.com/portal/wx_redirect.html?login_type=1

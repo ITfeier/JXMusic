@@ -11,6 +11,7 @@ import '../providers.dart';
 import '../services/api/http.dart';
 import '../services/api/kugou_api.dart';
 import '../services/api/music_api.dart';
+import '../services/api/netease_api.dart';
 import '../services/api/qq_api.dart';
 import '../services/tray_service.dart';
 import 'glass.dart';
@@ -445,7 +446,9 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
           const Duration(seconds: 2), (_) => _poll(created.key));
     } catch (e) {
       if (!mounted) return;
-      debugPrint('[JXMusic][扫码登录] 取码异常：$e');
+      // 隐私（QA D-01）：不打印原始异常串（可能含请求 URL/参数），只打接口层原因或异常类型
+      debugPrint('[JXMusic][扫码登录] 取码异常：'
+          '${widget.api.lastError ?? e.runtimeType}');
       setState(() => _hint = _failHint());
     }
   }
@@ -489,22 +492,44 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
         Navigator.of(context).pop(session);
         return;
       }
+      // QQ：轮询已拿到 code=0（扫码已在服务端确认）而 API 仍返回 null，
+      // 说明本轮兑换已执行且失败；必须停止轮询，否则同一二维码会被
+      // 2 秒定时器反复兑换（2026-11-09 实扫观测到连续兑换 5+ 次）。
+      if (widget.api is QQMusicApi &&
+          (widget.api as QQMusicApi).qrScanConfirmed) {
+        _done = true;
+        _timer?.cancel();
+        final detail = widget.api.lastError;
+        debugPrint('[JXMusic][扫码登录] QQ 扫码已确认但兑换失败，停止轮询：'
+            'lastError=${detail ?? '-'}');
+        setState(() => _hint = detail != null && detail.trim().isNotEmpty
+            ? detail
+            : 'QQ 扫码已确认，但换取登录态失败，请关闭后重新获取二维码');
+        return;
+      }
       // 等待态不覆盖提示；接口层明确报错（如过期/参数变更）时展示准确原因，
       // 错误恢复（重新进入等待态）后把提示复位，避免旧错误文案残留。
+      // 网易云 802「已扫码待确认」通过 qrHint 展示，不当成错误。
+      final hint =
+          widget.api is NeteaseApi ? (widget.api as NeteaseApi).qrHint : null;
       final error = widget.api.lastError;
       if (error != null && error.isNotEmpty) {
         setState(() => _hint = error);
+      } else if (hint != null && hint.isNotEmpty) {
+        setState(() => _hint = hint);
       } else if (_hint != '请使用对应平台 App 扫码登录') {
         setState(() => _hint = '请使用对应平台 App 扫码登录');
       }
     } catch (e) {
       // 单次轮询失败不再静默：优先展示接口层原因，否则给出网络层原因（下一轮会自动重试）
       final detail = widget.api.lastError;
-      debugPrint('[JXMusic][扫码登录] 轮询异常：$e（lastError=${detail ?? '-'}）');
+      // 隐私（QA D-01）：日志不打印原始异常串（可能含请求 URL），只打类型/接口层原因
+      debugPrint('[JXMusic][扫码登录] 轮询异常：${detail ?? '-'}'
+          '（${e.runtimeType}）');
       if (!mounted) return;
       setState(() => _hint = detail != null && detail.trim().isNotEmpty
           ? detail
-          : '扫码登录轮询失败：$e（正在自动重试）');
+          : '扫码登录轮询失败：${e.runtimeType}（正在自动重试）');
     } finally {
       _polling = false;
     }

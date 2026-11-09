@@ -45,8 +45,15 @@ class QQMusicApi implements MusicPlatformApi {
   static const String _ptqrshow = 'https://ssl.ptlogin2.qq.com/ptqrshow';
   static const String _ptqrlogin = 'https://ssl.ptlogin2.qq.com/ptqrlogin';
   static const String _loginJump = 'https://graph.qq.com/oauth2.0/login_jump';
-  static const String _redirectUri =
-      'https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/';
+  // authorize 的 redirect_uri：2026 现行参考实现用**双重编码**形式
+  // （surl=https%3A%252F%252Fy.qq.com%252F），旧实现是明文形式；
+  // 两种都试，谁先拿到 code 用谁（实扫失败后按监国要求补充双重编码候选）。
+  static const List<String> _authorizeRedirectUris = <String>[
+    'https://y.qq.com/portal/wx_redirect.html?login_type=1'
+        '&surl=https%3A%252F%252Fy.qq.com%252F',
+    'https://y.qq.com/portal/wx_redirect.html?login_type=1'
+        '&surl=https://y.qq.com/',
+  ];
 
   // 兑换链路候选：主用第一个，失败按顺序切下一个；接口失效时只改这里。
   // check_sig：扫码确认后换 p_skey（参考实现同域名，2026-11 实测 302 可达）
@@ -69,9 +76,9 @@ class QQMusicApi implements MusicPlatformApi {
   static const String _appid = '716027609'; // QQ音乐 Web 应用
   static const String _daid = '383';
   static const String _pt3rdAid = '100497308';
-  /// 扫码确认后「check_sig + authorize + QQLogin」整条兑换链的总超时。
-  /// check_sig 现在最多尝试 3 种请求形态（参考实现 / 带 qrsig / 服务端 URL），
-  /// 每次 10s 网络超时，故总预算从 20s 放宽到 30s。
+  /// 扫码确认后「check_sig + OAuth 链 / authorize + QQLogin」整条兑换链的总超时。
+  /// 实扫证据（2026-11-09）显示 check_sig 会 302 到 graph.qq.com/oauth2.0/login_jump，
+  /// 需要继续跟随 OAuth 跳转链取 code，故总预算放宽到 30s。
   static const Duration _exchangeTimeout = Duration(seconds: 30);
 
   final Map<String, String> _ptCookies = {}; // ssl.ptlogin2 域（qrsig）
@@ -80,6 +87,12 @@ class QQMusicApi implements MusicPlatformApi {
 
   /// 最近一次扫码操作失败原因（成功/等待时为 null，供设置页展示准确提示）
   String? _lastError;
+
+  /// 本次二维码是否已在服务端确认（ptuiCB code=0）。
+  /// 设置页据此在"已确认但兑换失败"时停止轮询，避免同一二维码每 2 秒被重复兑换。
+  bool _scanConfirmed = false;
+
+  bool get qrScanConfirmed => _scanConfirmed;
 
   @override
   String? get lastError => _lastError;
@@ -92,6 +105,12 @@ class QQMusicApi implements MusicPlatformApi {
   String _cookieStr(Map<String, String> cookies) =>
       cookies.entries.map((e) => '${e.key}=${e.value}').join('; ');
 
+  /// 合并响应头 Set-Cookie 到 cookie jar。
+  ///
+  /// **必须忽略值为空的 Set-Cookie**：2026-11-09 实扫取证显示 check_sig 的 302
+  /// 会先下发有效 `p_skey`（44 字符），随后又下发同名清空行 `p_skey=` 用于删除
+  /// 父域/其它 Path 上的旧 cookie；若按 last-wins 覆盖，jar 里 p_skey 会变空，
+  /// authorize 的 g_tk 退化为 hash33('')=5381，导致拿不到授权 code。
   void _collectSetCookies(Headers h, Map<String, String> into) {
     final list = h['set-cookie'];
     if (list == null) return;
@@ -99,7 +118,12 @@ class QQMusicApi implements MusicPlatformApi {
       final seg = item.split(';').first.trim();
       final eq = seg.indexOf('=');
       if (eq <= 0) continue;
-      into[seg.substring(0, eq).trim()] = seg.substring(eq + 1).trim();
+      final name = seg.substring(0, eq).trim();
+      final value = seg.substring(eq + 1).trim();
+      // 空值 = 删除 cookie 的指令（服务端用同名空 cookie 清父域），
+      // 不能覆盖已拿到的有效值。
+      if (name.isEmpty || value.isEmpty) continue;
+      into[name] = value;
     }
   }
 
@@ -178,9 +202,6 @@ class QQMusicApi implements MusicPlatformApi {
           headers: {'Referer': 'https://xui.ptlogin2.qq.com/', ...?headers},
         ));
   }
-
-  static bool _isRedirect(int status) =>
-      status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
 
   @override
   Future<List<Song>> searchSongs(String keyword,
@@ -461,6 +482,7 @@ class QQMusicApi implements MusicPlatformApi {
     _ptCookies.clear();
     _loginCookies.clear();
     _qrsig = null;
+    _scanConfirmed = false;
     _lastError = null;
     try {
       final resp = await JXHttp.dio.get(_ptqrshow,
@@ -562,7 +584,8 @@ class QQMusicApi implements MusicPlatformApi {
       // 66=未扫码 67=待确认 65=已过期
       final cb = parsePtuiCb(text);
       if (cb == null) {
-        _log('轮询响应无法解析：${_short(text)}');
+        // 隐私（QA D-01）：不打印原始响应（可能含 uin/ptsigx/昵称），只留长度
+        _log('轮询响应无法解析：len=${text.length}');
         _lastError = 'QQ 轮询返回异常内容，登录接口可能已变更';
         return null;
       }
@@ -589,6 +612,9 @@ class QQMusicApi implements MusicPlatformApi {
         _lastError = 'QQ 登录未完成（code $code）';
         return null;
       }
+      // 服务端已确认扫码（code=0）：标记后即使后续兑换失败，设置页也停止轮询，
+      // 避免同一个二维码被 2 秒定时器反复兑换（实扫观测到连续兑换 5+ 次）。
+      _scanConfirmed = true;
       // 服务端返回的跳转 URL 里已带 uin/ptsigx 及签名参数；HTML 转义（&amp;）需还原
       final jumpUrl = cb.redirectUrl.replaceAll('&amp;', '&');
       final ptNick = cb.nickname.trim();
@@ -690,10 +716,10 @@ class QQMusicApi implements MusicPlatformApi {
       };
 
   /// authorize 参数（来源：同上；g_tk = hash33(p_skey, 5381)）
-  Map<String, String> _authorizeParams(String pSkey) => {
+  Map<String, String> _authorizeParams(String pSkey, String redirectUri) => {
         'response_type': 'code',
         'client_id': _pt3rdAid,
-        'redirect_uri': _redirectUri,
+        'redirect_uri': redirectUri,
         'scope': 'get_user_info,get_app_friends',
         'state': 'state',
         'switch': '',
@@ -726,10 +752,13 @@ class QQMusicApi implements MusicPlatformApi {
         },
       };
 
-  /// 单次 check_sig 尝试：GET（不自动跟随）→ 合并 Set-Cookie → 无 p_skey 时
-  /// 手动跟随 302 链（最多 4 跳）继续合并。返回可读的尝试摘要（供 lastError 展示）。
-  /// Dio 自动跟随会丢中间响应的 Set-Cookie，而 p_skey 往往就在 302 上。
-  Future<String> _attemptCheckSig({
+  /// 单次 check_sig 尝试：GET（不自动跟随）→ 合并 Set-Cookie。
+  /// 返回首个响应的可读摘要与首个 Location（供后续 OAuth 链复用）。
+  ///
+  /// 取证（2026-11-09 实扫定案）：Set-Cookie 原始行用 [打码 + 值长度 + 前4后4]
+  /// 输出即可定位"先发有效 p_skey 再发同名空值"的问题，无需打印明文；
+  /// Location / body 同样打码或只留长度（QA D-01 隐私要求）。
+  Future<({String summary, String location})> _attemptCheckSig({
     required String url,
     Map<String, dynamic>? query,
     required Map<String, String> jar,
@@ -737,45 +766,54 @@ class QQMusicApi implements MusicPlatformApi {
     bool sendJar = true,
   }) async {
     final summary = <String>[];
+    final rawUrl =
+        query == null || query.isEmpty ? url : '$url?${_queryString(query)}';
+    _log('$tag 请求: ${_maskUrl(rawUrl)} len=${rawUrl.length}');
     var current = await _getRaw(url,
         query: query,
         headers: {if (sendJar && jar.isNotEmpty) 'Cookie': _cookieStr(jar)});
     var status = current.statusCode ?? 0;
     var location = _headerValue(current.headers, 'location');
+    final firstLocation = location;
     _collectSetCookies(current.headers, jar);
     var hasPskey = (jar['p_skey'] ?? '').isNotEmpty;
-    _log('$tag → HTTP $status location=${_short(location)} '
-        'set-cookie=[${jar.keys.join(',')}] p_skey=$hasPskey');
+    final bodyText = '${current.data ?? ''}';
+    _log('$tag → HTTP $status location=${_maskUrl(location)} len=${location.length}');
+    _log('$tag Set-Cookie原始: ${_setCookieDigest(current.headers)}');
+    _log('$tag jar=[${jar.keys.join(',')}] p_skey=$hasPskey bodyLen=${bodyText.length}');
     summary.add('$tag HTTP$status'
         '${location.isEmpty ? '' : '→${_maskUrl(location)}'}'
         '${hasPskey ? ' 已拿到p_skey' : ' 无p_skey'}');
-    if (hasPskey) return summary.join('；');
-
-    for (var hop = 1; hop <= 4; hop++) {
-      if (!_isRedirect(status) || location.isEmpty) break;
-      final referer = current.requestOptions.uri.toString();
-      final target = location.startsWith('http')
-          ? location
-          : Uri.parse(referer).resolve(location).toString();
-      _log('$tag 跳转#$hop → ${_maskUrl(target)}');
-      current = await _getRaw(target,
-          headers: {
-            'Referer': referer,
-            if (jar.isNotEmpty) 'Cookie': _cookieStr(jar),
-          });
-      status = current.statusCode ?? 0;
-      location = _headerValue(current.headers, 'location');
-      _collectSetCookies(current.headers, jar);
-      hasPskey = (jar['p_skey'] ?? '').isNotEmpty;
-      _log('$tag 跳转#$hop 结果 HTTP $status location=${_short(location)} '
-          'set-cookie=[${jar.keys.join(',')}] p_skey=$hasPskey');
-      summary.add('$tag 跳转#$hop HTTP$status'
-          '${location.isEmpty ? '' : '→${_maskUrl(location)}'}'
-          '${hasPskey ? ' 已拿到p_skey' : ' 无p_skey'}');
-      if (hasPskey) break;
-    }
-    return summary.join('；');
+    // 注意：这里**不再自动跟随 302**。check_sig 成功时 302 指向
+    // graph.qq.com/oauth2.0/login_jump，后续跳转链由 _codeFromOAuthChain 统一处理
+    // （避免同一跳转链被两处各走一遍、影响一次性 code/状态）。
+    return (summary: summary.join('；'), location: firstLocation);
   }
+
+  /// 把响应头 Set-Cookie 原始行打码后输出（名字 + 值长度 + 前4后4），
+  /// 用于判断服务端是否下发了空值 cookie，不泄露完整敏感值。
+  String _setCookieDigest(Headers headers) {
+    final list = headers['set-cookie'];
+    if (list == null || list.isEmpty) return '(无)';
+    final out = <String>[];
+    for (final raw in list) {
+      final seg = raw.split(';').first.trim();
+      final eq = seg.indexOf('=');
+      if (eq <= 0) {
+        out.add(_short(raw, 30));
+        continue;
+      }
+      final name = seg.substring(0, eq).trim();
+      final value = seg.substring(eq + 1).trim();
+      out.add('$name=${_mask(value)}');
+    }
+    return out.join(' | ');
+  }
+
+  /// 把查询参数按 URI 规范拼回字符串（仅用于日志打印原始 URL）
+  String _queryString(Map<String, dynamic> query) => query.entries
+      .map((e) => '${e.key}=${Uri.encodeQueryComponent('${e.value}')}')
+      .join('&');
 
   /// 扫码确认后换登录态：check_sig 取 p_skey → oauth2/authorize 取 code →
   /// QQLogin 取 musicid/musickey。
@@ -799,137 +837,106 @@ class QQMusicApi implements MusicPlatformApi {
       final primary = _checkSigCandidates.first;
       var gotPskey = false;
 
+      var chainStart = '';
+
       // 1a) 参考实现同款：不带 Cookie，直接读首个响应 Set-Cookie
       try {
-        steps.add(await _attemptCheckSig(
+        final attempt = await _attemptCheckSig(
           url: primary,
           query: _checkSigParams(uin, ptsigx),
           jar: ptCookies,
           tag: 'check_sig#1(无Cookie)',
           sendJar: false,
-        ));
+        );
+        steps.add(attempt.summary);
+        chainStart = attempt.location;
       } catch (e) {
         steps.add('check_sig#1 异常 ${_describeError(e, '')}');
-        _log('check_sig#1 异常：$e');
+        _log('check_sig#1 异常：${_describeError(e, '')}');
       }
       gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
 
-      // 1b) 带上 qrsig（ptlogin 域 cookie）重试
-      final qrsig = _qrsig;
-      if (!gotPskey && qrsig != null && qrsig.isNotEmpty) {
-        ptCookies['qrsig'] = qrsig;
-        try {
-          steps.add(await _attemptCheckSig(
-            url: primary,
-            query: _checkSigParams(uin, ptsigx),
-            jar: ptCookies,
-            tag: 'check_sig#2(带qrsig)',
-          ));
-        } catch (e) {
-          steps.add('check_sig#2 异常 ${_describeError(e, '')}');
-          _log('check_sig#2 异常：$e');
-        }
-        gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
-      }
-
-      // 1c) 直接用服务端返回的 check_sig URL（ptuiCB 给的 URL 带完整签名参数）
-      final jump = ptuiJumpUrl.replaceAll('&amp;', '&');
-      if (!gotPskey && jump.isNotEmpty) {
-        final uri = Uri.tryParse(jump);
-        if (uri != null && uri.path.endsWith('check_sig')) {
+      // 1b) 若 1a 既没 p_skey 也没拿到 302 入口，带 qrsig 再取一次入口
+      if (!gotPskey && chainStart.isEmpty) {
+        final qrsig = _qrsig;
+        if (qrsig != null && qrsig.isNotEmpty) {
+          ptCookies['qrsig'] = qrsig;
           try {
-            steps.add(await _attemptCheckSig(
-                url: jump, jar: ptCookies, tag: 'check_sig#3(服务端URL)'));
+            final attempt = await _attemptCheckSig(
+              url: primary,
+              query: _checkSigParams(uin, ptsigx),
+              jar: ptCookies,
+              tag: 'check_sig#2(带qrsig)',
+            );
+            steps.add(attempt.summary);
+            if (chainStart.isEmpty) chainStart = attempt.location;
           } catch (e) {
-            steps.add('check_sig#3 异常 ${_describeError(e, '')}');
-            _log('check_sig#3 异常：$e');
+            steps.add('check_sig#2 异常 ${_describeError(e, '')}');
           }
           gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
         }
       }
 
-      // 1d) 其余 check_sig 候选（配置区可扩展域名/路径）
-      for (final base in _checkSigCandidates.skip(1)) {
-        if (gotPskey) break;
-        try {
-          steps.add(await _attemptCheckSig(
-            url: base,
-            query: _checkSigParams(uin, ptsigx),
-            jar: ptCookies,
-            tag: 'check_sig(候选$base)',
-          ));
-        } catch (e) {
-          steps.add('check_sig(候选$base) 异常 ${_describeError(e, '')}');
+      // 1c) 仍无入口时，直接请求 ptuiCB 返回的服务端 check_sig URL
+      if (!gotPskey && chainStart.isEmpty) {
+        final jump = ptuiJumpUrl.replaceAll('&amp;', '&');
+        final uri = Uri.tryParse(jump);
+        if (jump.isNotEmpty && uri != null && uri.path.endsWith('check_sig')) {
+          try {
+            final attempt = await _attemptCheckSig(
+                url: jump, jar: ptCookies, tag: 'check_sig#3(服务端URL)');
+            steps.add(attempt.summary);
+            if (chainStart.isEmpty) chainStart = attempt.location;
+          } catch (e) {
+            steps.add('check_sig#3 异常 ${_describeError(e, '')}');
+          }
+          gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
         }
-        gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
       }
 
-      if (!gotPskey) {
+      _log('check_sig 阶段结束：p_skey=$gotPskey '
+          'jar=[${ptCookies.keys.join(',')}] '
+          'p_skey值=${_mask(ptCookies['p_skey'])} '
+          'OAuth链入口=${_maskUrl(chainStart)}');
+
+      // 2) 取授权 code（三条路，谁先拿到用谁）：
+      //    2a) 有 p_skey → 参考实现 authorize（g_tk=hash33(p_skey,5381)）；
+      //    2b) 跟随 check_sig 的 302（实扫证据：→ graph.qq.com/oauth2.0/login_jump）
+      //        的 OAuth 跳转链，从 Location / HTML 里取 code（不依赖 p_skey）；
+      //    2c) 兜底：p_skey 为空也带全部 jar cookie 试 authorize。
+      var code = '';
+      if (gotPskey) {
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!);
+      }
+      if (code.isEmpty && chainStart.isNotEmpty) {
+        _log('尝试跟随 OAuth 链取 code：${_maskUrl(chainStart)} '
+            'len=${chainStart.length}');
+        code = await _codeFromOAuthChain(startUrl: chainStart, jar: ptCookies);
+        if (code.isNotEmpty) {
+          _lastError = null;
+          _log('OAuth 链取到 code=${_mask(code)}');
+        }
+      }
+      // OAuth 链过程中若补发了 p_skey，再走一次 authorize
+      if (code.isEmpty && (ptCookies['p_skey'] ?? '').isNotEmpty) {
+        _log('OAuth 链后补发 p_skey=${_mask(ptCookies['p_skey'])}，重试 authorize');
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!);
+      }
+      if (code.isEmpty) {
+        _log('兜底：p_skey=${_mask(ptCookies['p_skey'])} 时也尝试 authorize');
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey'] ?? '');
+      }
+      if (code.isEmpty) {
         final detail = steps.isEmpty ? '无有效响应' : steps.join('；');
-        _lastError = 'QQ 扫码已确认，但 check_sig 未返回 p_skey（$detail）';
+        _lastError = 'QQ 扫码已确认，但未取到授权 code'
+            '（p_skey=${gotPskey ? '有' : '空'}；'
+            'OAuth链=${chainStart.isEmpty ? '无入口' : '已尝试'}；'
+            'check_sig: ${_short(detail, 300)}）';
         _log(_lastError!);
         return null;
       }
       _lastError = null;
-      final pSkey = ptCookies['p_skey']!;
-      _log('check_sig 成功：p_skey=${_mask(pSkey)} '
-          '可用 cookie=[${ptCookies.keys.join(',')}]');
-
-      // 2) authorize：先 POST 表单；取不到 code 时无条件降级 GET 再试
-      var code = '';
-      for (final base in _authorizeCandidates) {
-        final params = _authorizeParams(pSkey);
-        final headers = {
-          'Referer': 'https://graph.qq.com/',
-          'Cookie': _cookieStr(ptCookies),
-        };
-        Response<dynamic>? resp;
-        try {
-          resp = await JXHttp.dio.post(base,
-              data: params,
-              options: Options(
-                contentType: Headers.formUrlEncodedContentType,
-                followRedirects: false,
-                validateStatus: (s) => s != null && s < 500,
-                receiveTimeout: const Duration(seconds: 10),
-                headers: headers,
-              ));
-        } catch (e) {
-          _lastError = _describeError(e, 'authorize POST 失败（$base）');
-          _log('${_lastError!}：$e');
-        }
-        code = resp == null ? '' : _extractCode(resp);
-        _log('authorize POST HTTP ${resp?.statusCode ?? '-'} '
-            'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))} '
-            'code=${_mask(code)}');
-        if (code.isEmpty) {
-          try {
-            resp = await JXHttp.dio.get(base,
-                queryParameters: params,
-                options: Options(
-                  followRedirects: false,
-                  validateStatus: (s) => s != null && s < 500,
-                  receiveTimeout: const Duration(seconds: 10),
-                  headers: headers,
-                ));
-          } catch (e) {
-            _lastError = _describeError(e, 'authorize GET 降级失败（$base）');
-            _log('${_lastError!}：$e');
-            resp = null;
-          }
-          code = resp == null ? '' : _extractCode(resp);
-          _log('authorize GET HTTP ${resp?.statusCode ?? '-'} '
-              'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))} '
-              'code=${_mask(code)}');
-        }
-        if (code.isNotEmpty) break;
-        _lastError = 'authorize 未取到 code（HTTP ${resp?.statusCode ?? '-'}，'
-            'location=${_short(resp == null ? '' : _headerValue(resp.headers, 'location'))}，'
-            '$base）';
-      }
-      if (code.isEmpty) return null;
-      _lastError = null;
-      _log('authorize 成功：code=${_mask(code)}');
+      _log('授权 code 已取得（${_mask(code)}），进入 QQLogin');
 
       // 3) QQLogin：主 base 失败（网络/5xx/JSON 异常/业务 code!=0）自动切备用 base
       for (final base in _qqLoginCandidates) {
@@ -966,13 +973,13 @@ class QQMusicApi implements MusicPlatformApi {
           _lastError = 'QQLogin 返回 code=${bizCode ?? outerCode}（$base）';
         } catch (e) {
           _lastError = _describeError(e, 'QQLogin 请求失败（$base）');
-          _log('${_lastError!}：$e');
+          _log(_lastError!);
         }
       }
       return null;
     } catch (e) {
       _lastError = _describeError(e, 'QQ 登录态兑换失败');
-      _log('${_lastError!}：$e');
+      _log(_lastError!);
       return null;
     }
   }
@@ -980,13 +987,159 @@ class QQMusicApi implements MusicPlatformApi {
   /// 提取 302 Location（大小写兼容）里的 code；Location 缺失/延迟时兜底解析响应体
   String _extractCode(Response<dynamic> resp) {
     final location = _headerValue(resp.headers, 'location');
-    final fromLocation =
-        RegExp(r'[?&]code=([^&"]+)').firstMatch(location)?.group(1) ?? '';
+    final fromLocation = _extractCodeFromText(location);
     if (fromLocation.isNotEmpty) return fromLocation;
-    return RegExp(r'code=([A-Za-z0-9_\-]+)')
-            .firstMatch('${resp.data}')
-            ?.group(1) ??
-        '';
+    return _extractCodeFromText('${resp.data}');
+  }
+
+  /// 从文本（URL / HTML / JS）里提取 OAuth 授权 code。
+  /// 只接受 `?code=` / `&code=`（排除 errcode/retcode 等干扰）且长度 >= 8。
+  String _extractCodeFromText(String text) {
+    if (text.isEmpty) return '';
+    final m = RegExp(r'[?&]code=([A-Za-z0-9_\-]{8,})').firstMatch(text);
+    return m?.group(1) ?? '';
+  }
+
+  /// authorize：先 POST 表单，取不到 code 时无条件降级 GET。
+  /// 实扫证据下 p_skey 可能为空值，此时 g_tk 用空串计算（部分服务端分支仍接受），
+  /// 只要 jar 里还有 pt4_token/pt_oauth_token 等 cookie 就有机会拿到 code。
+  /// redirect_uri 做两种编码候选（双重编码 / 明文），按顺序尝试。
+  Future<String> _authorizeForCode(
+      Map<String, String> jar, String pSkey) async {
+    for (final redirectUri in _authorizeRedirectUris) {
+      for (final base in _authorizeCandidates) {
+        final params = _authorizeParams(pSkey, redirectUri);
+        final headers = {
+          'Referer': 'https://graph.qq.com/',
+          'Cookie': _cookieStr(jar),
+        };
+        Response<dynamic>? resp;
+        var code = '';
+        try {
+          resp = await JXHttp.dio.post(base,
+              data: params,
+              options: Options(
+                contentType: Headers.formUrlEncodedContentType,
+                followRedirects: false,
+                validateStatus: (s) => s != null && s < 500,
+                receiveTimeout: const Duration(seconds: 10),
+                headers: headers,
+              ));
+        } catch (e) {
+          _lastError = _describeError(e, 'authorize POST 失败（$base）');
+          _log(_lastError!);
+        }
+        final postLoc =
+            resp == null ? '' : _headerValue(resp.headers, 'location');
+        code = resp == null ? '' : _extractCode(resp);
+        _log('authorize POST HTTP ${resp?.statusCode ?? '-'} '
+            'redirect_uri=${_mask(redirectUri, head: 40, tail: 20)} '
+            'Location=${_maskUrl(postLoc)} locLen=${postLoc.length} '
+            'codeLen=${code.length} code=${_mask(code)}');
+        if (code.isEmpty) {
+          try {
+            resp = await JXHttp.dio.get(base,
+                queryParameters: params,
+                options: Options(
+                  followRedirects: false,
+                  validateStatus: (s) => s != null && s < 500,
+                  receiveTimeout: const Duration(seconds: 10),
+                  headers: headers,
+                ));
+          } catch (e) {
+            _lastError = _describeError(e, 'authorize GET 降级失败（$base）');
+            _log(_lastError!);
+            resp = null;
+          }
+          final getLoc =
+              resp == null ? '' : _headerValue(resp.headers, 'location');
+          code = resp == null ? '' : _extractCode(resp);
+          _log('authorize GET HTTP ${resp?.statusCode ?? '-'} '
+              'redirect_uri=${_mask(redirectUri, head: 40, tail: 20)} '
+              'Location=${_maskUrl(getLoc)} locLen=${getLoc.length} '
+              'codeLen=${code.length} code=${_mask(code)}');
+        }
+        if (code.isNotEmpty) return code;
+        _lastError = 'authorize 未取到 code（HTTP ${resp?.statusCode ?? '-'}，'
+            '$base）';
+      }
+    }
+    return '';
+  }
+
+  /// 从 check_sig 的 302 入口（实扫：graph.qq.com/oauth2.0/login_jump）开始，
+  /// 带全部 jar cookie 跟随 OAuth 跳转链（最多 5 跳），从 Location / HTML / JS
+  /// 里取授权 code。每跳只输出：状态、Location 打码+长度、Set-Cookie 摘要、
+  /// body 长度与关键特征（是否含 code=/oauth2.0/script），不打印明文 URL/body
+  /// （QA D-01 隐私要求）。
+  Future<String> _codeFromOAuthChain({
+    required String startUrl,
+    required Map<String, String> jar,
+  }) async {
+    var url = startUrl;
+    var referer = 'https://graph.qq.com/';
+    for (var hop = 1; hop <= 5; hop++) {
+      if (url.isEmpty) break;
+      Response<dynamic> resp;
+      try {
+        resp = await _getRaw(url, headers: {
+          'Referer': referer,
+          if (jar.isNotEmpty) 'Cookie': _cookieStr(jar),
+        });
+      } catch (e) {
+        _log('OAuth链#$hop 请求异常：${_describeError(e, '')}');
+        return '';
+      }
+      _collectSetCookies(resp.headers, jar);
+      final status = resp.statusCode ?? 0;
+      final location = _headerValue(resp.headers, 'location');
+      final body = '${resp.data ?? ''}';
+      final fromLocation = _extractCodeFromText(location);
+      final fromBody = _extractCodeFromText(body);
+      _log('OAuth链#$hop 请求=${_maskUrl(url)}');
+      _log('OAuth链#$hop HTTP=$status '
+          'jar=[${jar.keys.join(',')}] p_skey=${_mask(jar['p_skey'])}');
+      _log('OAuth链#$hop Location=${_maskUrl(location)} '
+          'locLen=${location.length}');
+      _log('OAuth链#$hop Set-Cookie原始: ${_setCookieDigest(resp.headers)}');
+      _log('OAuth链#$hop bodyLen=${body.length} '
+          'hasCode=${body.contains('code=')} '
+          'hasOauth=${body.contains('oauth2.0/')} '
+          'hasScript=${body.contains('script')}');
+      _log('OAuth链#$hop code: location=${_mask(fromLocation)} '
+          'body=${_mask(fromBody)}');
+      if (fromLocation.isNotEmpty) return fromLocation;
+      if (fromBody.isNotEmpty) return fromBody;
+
+      var next = _nextUrlFromBody(body);
+      if (next.isEmpty) {
+        if (location.isEmpty) return '';
+        next = location.startsWith('http')
+            ? location
+            : Uri.parse(url).resolve(location).toString();
+      }
+      if (next == url) return '';
+      referer = url;
+      url = next;
+    }
+    return '';
+  }
+
+  /// 从 HTML/JS 响应体里找"下一页"URL（graph oauth show / login_jump / meta refresh）
+  String _nextUrlFromBody(String body) {
+    if (body.isEmpty) return '';
+    final m1 = RegExp(r'''window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]''')
+        .firstMatch(body);
+    if (m1 != null) return m1.group(1) ?? '';
+    final m2 = RegExp(r'''location\.replace\(\s*['"]([^'"]+)['"]''')
+        .firstMatch(body);
+    if (m2 != null) return m2.group(1) ?? '';
+    final m3 = RegExp(r'''<(?:meta|META)[^>]+url=([^"'>\s]+)''')
+        .firstMatch(body);
+    if (m3 != null) return m3.group(1) ?? '';
+    final m4 =
+        RegExp(r'''https?://[^\s"'<>]+oauth2\.0/[^\s"'<>]+''').firstMatch(body);
+    return m4?.group(0) ?? '';
   }
 
   /// 简易 UUID v4（authorize 的 ui 参数，无强校验）

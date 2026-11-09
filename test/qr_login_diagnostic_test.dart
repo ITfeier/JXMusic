@@ -51,7 +51,8 @@ void main() {
   group('网易云扫码轮询（离线）', () {
     test('803 + code 为字符串：MUSIC_U 只在响应头 Set-Cookie 时也能拿到登录态', () async {
       _installAdapter(_MockAdapter((o) async {
-        expect(o.path, contains('/api/login/qrcode/client/login'));
+        // eapi 协议：POST /eapi/login/qrcode/client/login（断言 /eapi/ 前缀防协议回退）
+        expect(o.path, contains('/eapi/login/qrcode/client/login'));
         return _jsonBody(
           {
             'code': '803',
@@ -105,12 +106,30 @@ void main() {
       expect(api.lastError, contains('过期'));
     });
 
-    test('802 已扫码待确认：给出可见提示', () async {
+    test('802 已扫码待确认：给出可见提示（qrHint，非错误）', () async {
       _installAdapter(
           _MockAdapter((o) async => _jsonBody({'code': 802, 'message': '待确认'})));
       final api = NeteaseApi();
       expect(await api.pollQrLogin('k'), isNull);
-      expect(api.lastError, contains('确认'));
+      expect(api.lastError, isNull);
+      expect(api.qrHint, contains('确认'));
+    });
+
+    test('同名空 Set-Cookie（清父域）不能覆盖已拿到的 MUSIC_U', () async {
+      _installAdapter(_MockAdapter((o) async => _jsonBody(
+            {'code': 803, 'message': '授权登陆成功'},
+            headers: {
+              'set-cookie': [
+                'MUSIC_U=VALID_MUSIC_U; Path=/; Domain=music.163.com',
+                'MUSIC_U=; Path=/; Domain=.163.com; '
+                    'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+              ],
+            },
+          )));
+      final api = NeteaseApi();
+      final session = await api.pollQrLogin('k');
+      expect(session, isNotNull);
+      expect(session!.cookies['MUSIC_U'], 'VALID_MUSIC_U');
     });
 
     test('801 等待扫码：静默等待（lastError 为 null）', () async {
@@ -223,6 +242,62 @@ void main() {
       expect(api.lastError, isNull);
     });
 
+    test('check_sig 无 p_skey 时：带 jar 跟随 login_jump 链取 code -> QQLogin 成功', () async {
+      var checkSigCount = 0;
+      _installAdapter(_MockAdapter((o) async {
+        final path = o.path;
+        if (path.contains('ptqrshow')) return show();
+        if (path.contains('ptqrlogin')) return loginOk();
+        if (path.contains('check_sig')) {
+          checkSigCount++;
+          // 实扫证据的形态：302 → login_jump；Set-Cookie 名称含 p_skey 但值为空
+          return ResponseBody.fromString('', 302, headers: {
+            'location': [
+              'https://graph.qq.com/oauth2.0/login_jump?uin=o0123456789'
+            ],
+            'set-cookie': [
+              'p_skey=; Path=/; Domain=graph.qq.com',
+              'pt4_token=FAKE_PT4_TOKEN; Path=/',
+            ],
+          });
+        }
+        if (path.contains('oauth2.0/login_jump')) {
+          return ResponseBody.fromString('', 302, headers: {
+            'location': [
+              'https://y.qq.com/portal/wx_redirect.html?login_type=1'
+                  '&surl=https://y.qq.com/&code=CHAIN_CODE_456'
+            ],
+          });
+        }
+        if (path.contains('oauth2.0/authorize')) {
+          fail('已从 OAuth 链取到 code，不应再请求 authorize');
+        }
+        if (path.contains('cgi-bin/musicu.fcg')) {
+          return _jsonBody({
+            'code': 0,
+            'req': {
+              'code': 0,
+              'data': {
+                'musicid': 654321,
+                'musickey': 'KEY_FROM_CHAIN',
+                'nick': '链上用户',
+              },
+            },
+          });
+        }
+        return ResponseBody.fromString('unexpected: $path', 404);
+      }));
+
+      final api = QQMusicApi();
+      final created = await api.createQrLogin();
+      final session = await api.pollQrLogin(created.key);
+      expect(session, isNotNull);
+      expect(session!.nickname, '链上用户');
+      expect(session.cookies['qm_keyst'], 'KEY_FROM_CHAIN');
+      expect(api.qrScanConfirmed, isTrue);
+      expect(checkSigCount, 1, reason: '拿到 302 入口后不应重复请求 check_sig');
+    });
+
     test('check_sig 始终不返回 p_skey：返回 null 且 lastError 含具体原因', () async {
       _installAdapter(_MockAdapter((o) async {
         final path = o.path;
@@ -251,6 +326,96 @@ void main() {
       final api = QQMusicApi();
       expect(await api.pollQrLogin('not-a-real-qrsig'), isNull);
       expect(api.lastError, isNull);
+    });
+
+    test('同名空 Set-Cookie（清父域）不能覆盖有效 p_skey；authorize 的 g_tk 不退化为 5381', () async {
+      Map<dynamic, dynamic>? authorizeData;
+      const pskey = 'PSKEY_VALID_VALUE_44_CHARS_ABCDEFGHIJKLMNOP';
+      _installAdapter(_MockAdapter((o) async {
+        final path = o.path;
+        if (path.contains('ptqrshow')) return show();
+        if (path.contains('ptqrlogin')) return loginOk();
+        if (path.contains('check_sig')) {
+          // 复刻 2026-11-09 实扫原始顺序：先有效 p_skey，随后同名清空行
+          // （服务端用于删除父域/其它 Path 的旧 cookie；不能覆盖有效值）。
+          return ResponseBody.fromString('', 302, headers: {
+            'location': ['https://graph.qq.com/oauth2.0/login_jump?x=1'],
+            'set-cookie': [
+              'p_skey=$pskey; Path=/; Domain=graph.qq.com',
+              'p_skey=; Path=/; Domain=qq.com; '
+                  'Expires=Thu, 01 Jan 1970 00:00:00 GMT',
+              'pt4_token=TOKEN; Path=/',
+            ],
+          });
+        }
+        if (path.contains('oauth2.0/authorize')) {
+          authorizeData = o.data is Map ? o.data as Map : null;
+          return ResponseBody.fromString('', 302, headers: {
+            'location': [
+              'https://y.qq.com/portal/wx_redirect.html?login_type=1'
+                  '&code=CODE_OK_123'
+            ],
+          });
+        }
+        if (path.contains('cgi-bin/musicu.fcg')) {
+          return _jsonBody({
+            'code': 0,
+            'req': {
+              'code': 0,
+              'data': {
+                'musicid': 111,
+                'musickey': 'MK',
+                'nick': '有效p_skey用户',
+              },
+            },
+          });
+        }
+        return ResponseBody.fromString('unexpected: $path', 404);
+      }));
+
+      int hash33(String s, [int h = 0]) {
+        var e = h;
+        for (final c in s.codeUnits) {
+          e += (e << 5) + c;
+        }
+        return 2147483647 & e;
+      }
+
+      final api = QQMusicApi();
+      final created = await api.createQrLogin();
+      final session = await api.pollQrLogin(created.key);
+      expect(session, isNotNull);
+      expect(session!.nickname, '有效p_skey用户');
+      expect(authorizeData, isNotNull);
+      final gTk = '${authorizeData!['g_tk']}';
+      expect(gTk, isNot('5381'), reason: 'p_skey 不能被同名空 cookie 覆盖');
+      expect(gTk, '${hash33(pskey, 5381)}');
+    });
+  });
+
+  // 网易云 eapi 加密固定向量：由 Node/OpenSSL（crypto AES-128-ECB + md5）
+  // 按参考实现（Yuanlang3/dsh-netease-music-plugin eapiBody）独立计算，
+  // 用于证明 Dart/pointycastle 实现的 params 与官方协议一致。
+  group('网易云 eapi 加密（固定向量）', () {
+    test('unikey 请求 params 与参考实现一致', () {
+      expect(
+        NeteaseApi.eapiParams('/api/login/qrcode/unikey', {'type': '3'}),
+        '1CA81A97B7BAEB099F29A9B99A25CD6E58E7BA5B35F25231033065C776830C0A'
+        'BBBC72845BFB6CD868F6F9B7CBD2746DF59D3614BB3D33D8D3C02F073E47B374'
+        'D7CA311CE3B46AC3C09B5B3F9361AAB2B29BE5508A1F6EDB199EDB363DB39B87',
+      );
+    });
+
+    test('client/login 请求 params 与参考实现一致', () {
+      expect(
+        NeteaseApi.eapiParams('/api/login/qrcode/client/login',
+            {'key': 'test-key-123', 'type': '3'}),
+        '1CA81A97B7BAEB099F29A9B99A25CD6EEB07A96476EBB336CC9DE7F57581855'
+        'B8F776DF5B44425C82267FA8FD6FCF4D50ACC6F255672B2C15E34FB4EC57C39F'
+        '6CBA1B23E753354D30A99FB7FBE9E4EC465AAB0A7D0391AB554E577AC50E522D'
+        '5000833A6F799AE0F71EC1E661A2142B3A938C12E10DCBE06B53D4DA1FF52117'
+        'F',
+      );
     });
   });
 }

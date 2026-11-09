@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## 0.9.9+18（扫码登录修复，同日续）— 2026-11-09
+
+### 修复（扫码登录：QQ / 网易云端到端可用）
+
+- **QQ 扫码登录（真机实扫通过）**：根因是 `check_sig` 响应里服务端**先下发有效 `p_skey`（44 字符）、随后又下发同名空值行**（删除父域旧 cookie）；旧 Cookie 合并是 last-wins，被空值覆盖 → `authorize` 的 `g_tk` 退化为 `hash33('')=5381` → 拿不到授权 code。修复：Set-Cookie 合并**忽略空值行**（`qq_api.dart` / `netease_api.dart` 两处）；扫码确认后停止轮询，不再对同一二维码反复兑换；失败文案给出具体阶段。
+  - 实测（MuMu 模拟器实扫）：`check_sig → p_skey=true(len=44)` → `authorize 302 → code(len=32)` → `QQLogin 外层code=0/业务code=0` → 登录成功「ゞ李先森」cookies=4；重启 App 后仍「已登录」。
+- **网易云扫码登录（真机实扫通过）**：旧 `/api/login/qrcode/*` + `type=1` 是「网页模拟」协议，2026 服务端在手机确认后返回 `8821 请切换其他登录方式或升级新版本再试`。迁移官方 **eapi**：`/eapi/login/qrcode/unikey`、`/eapi/login/qrcode/client/login`，请求体 AES-128-ECB（key `e82ckenh8dichen8`，明文 `apiPath-36cd479b6b5-json-36cd479b6b5-md5`）+ 官方客户端 UA / 设备指纹 Cookie + `type:"3"`；801/802/800/8821/803 分状态提示；803 从响应体与 Set-Cookie 双通道取 `MUSIC_U`，缺则明确失败；`getPlayUrl` 补登录 Cookie（仅发 163.com 域）。
+  - 实测：`801 → 802 授权中 → 803 授权登陆成功`，`MUSIC_U(len=802)`、cookies=7；重启后仍「已登录：网易云用户」。
+- **日志隐私红线**：登录全链路日志统一打码（URL/Location 走 `_maskUrl`、Set-Cookie 只打名字+值长度+前后4位、body 只打长度与特征位、code/musickey/p_skey/MUSIC_U 打码），release 包 logcat 可用且不泄露完整凭证。
+
+### 测试 / 验收
+
+- 新增 `test/qr_login_diagnostic_test.dart` 15 项离线用例：eapi 固定向量（与参考实现独立比对）、空 Set-Cookie 不覆盖有效 `p_skey`、无 `p_skey` 时 OAuth 链取 code、QQLogin 成功/失败分支、8821 文案等。
+- QA 独立验收：`docs/projects/扫码登录修复/测试报告-实扫验收.md`（结论：**通过**——实扫 + 重启持久化 + 隐私红线）；`flutter analyze lib` 零问题；`flutter test --no-pub` **121 passed / 4 skipped**。
+- 实扫证据（脱敏）：`docs/projects/扫码登录修复/证据-logcat-QQ登录成功.txt`、`证据-logcat-网易云登录成功.txt`、`screenshots/06~08`；修复报告：`修复报告-实扫.md`。
+- 已知残留（不阻断）：QQ VIP 点播未验证；网易云 8821/800 终态仍轮询至 2 分钟；QQ 兑换链 30s 总超时小于最坏路径且超时不取消底层请求；QQ `#code=` fragment 未识别。
+
 ## 0.9.9+18 — 2026-11-09
 
 ### 修复（真机反馈：QQ 歌单详情 / 歌单迷你播放器 / 热歌榜「更多」）

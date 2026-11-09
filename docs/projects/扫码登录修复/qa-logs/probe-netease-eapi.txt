@@ -1,0 +1,23 @@
+﻿=== 0) 自检：AES-128-ECB/params 可生成 ===
+[self-check] deviceId=0E62…(len=52) params(len=192, 前16=1CA81A97B7BAEB09)
+
+=== 1) eapi 取码（unikey，type="3"）===
+[unikey] HTTP=200 code=200 message= unikey=aeb8…(len=36) set-cookie=[NMTID]
+
+=== 2) eapi 轮询（无人扫码，预期 800/801/802 等待态）===
+[poll1] HTTP=200 code=801 message=等待扫码 set-cookie=[NMTID]
+[poll2] HTTP=200 code=801 message=等待扫码 set-cookie=[NMTID]
+[poll3] HTTP=200 code=801 message=等待扫码 set-cookie=[NMTID]
+
+=== 3) 对照：旧 /api 端点还接受吗（同 key 跑一次，仅取证）===
+[old-api] HTTP=200 body={"code":801,"message":"等待扫码"}
+
+结果：PASS（eapi 取码成功、轮询处于等待态、协议/加密/指纹被服务端接受）
+dart : Running build hooks...Running build hooks...
+所在位置 行:1 字符: 211
++ ... ject\yinyue\JXMusic; dart run tool/check_netease_qr.dart 2>&1 | Out-F ...
++                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Running build h... build hooks...:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+EXITCODE=0

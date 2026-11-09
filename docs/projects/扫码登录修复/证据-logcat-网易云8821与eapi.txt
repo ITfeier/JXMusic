@@ -1,0 +1,20 @@
+﻿# 网易云扫码实扫证据（2026-11-09，MuMu emulator-5554，JXMusic release 包）
+
+## 1) 旧「web 模拟」协议实扫（08:44-08:46）：手机确认后服务端返回 8821
+```
+
+11-09 08:45:16.914 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=801 message=等待扫码
+11-09 08:45:18.911 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=801 message=等待扫码
+11-09 08:45:20.913 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=802 message=授权中
+11-09 08:45:22.919 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=8821 message=请切换其他登录方式或升级新版本再试
+11-09 08:45:24.957 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=8821 message=请切换其他登录方式或升级新版本再试
+11-09 08:45:26.959 10623 10623 I flutter : [JXMusic][网易云登录] 轮询 HTTP=200 code=8821 message=请切换其他登录方式或升级新版本再试
+
+```
+
+## 2) 新 eapi 协议在 App 内生效（09:09）：eapi 取码 200 + 轮询 801
+```
+
+11-09 09:09:33.290 12155 12155 I flutter : [JXMusic][网易云登录] eapi 轮询 HTTP=200 code=801 message=等待扫码 set-cookie=[NMTID]
+11-09 09:09:35.237 12155 12155 I flutter : [JXMusic][网易云登录] eapi 轮询 HTTP=200 code=801 message=等待扫码 set-cookie=[NMTID]
+```

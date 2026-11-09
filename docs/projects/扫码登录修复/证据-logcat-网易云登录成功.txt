@@ -1,0 +1,12 @@
+﻿# 网易云扫码登录成功证据（2026-11-09 18:53，MuMu emulator-5554，监国采集 scan_1352.log）
+
+## 1) eapi 轮询拿到 803，MUSIC_U 在响应头 Set-Cookie（len=802）
+```
+
+11-09 18:53:07.571  3202  3202 I flutter : [JXMusic][网易云登录] eapi 轮询 HTTP=200 code=803 message=授权登陆成功 set-cookie=[MUSIC_SNS,MUSIC_R_T,MUSIC_R_T,MUSIC_R_U,MUSIC_R_T,MUSIC_R_T,MUSIC_A_T,MUSIC_A_T,MUSIC_R_T,MUSIC_U,MUSIC_A_T,MUSIC_R_T,MUSIC_A_T,MUSIC_R_U,MUSIC_R_T,MUSIC_R_T,MUSIC_A_T,MUSIC_R_T,MUSIC_A_T,MUSIC_A_T,NMTID,MUSIC_R_T,__csrf,MUSIC_A_T,MUSIC_A_T,MUSIC_A_T,MUSIC_A_T,MUSIC_R_T]
+11-09 18:53:07.571  3202  3202 I flutter : [JXMusic][网易云登录] 803 登录成功：cookie=[MUSIC_SNS,MUSIC_R_T,MUSIC_R_U,MUSIC_A_T,MUSIC_U,NMTID,__csrf] MUSIC_U=0008…CB3B(len=802)
+11-09 18:53:07.572  3202  3202 I flutter : [JXMusic][扫码登录] 登录态已写入：platform=1 nickname=网易云用户 cookies=7 lastError=-
+```
+
+## 2) 重启复核
+截图：`screenshots/06-网易云登录成功-重启后仍已登录.png`（重启 App 后设置页仍显示「已登录：网易云用户」）
