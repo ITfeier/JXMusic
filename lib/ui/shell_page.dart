@@ -111,19 +111,54 @@ class ShellPage extends ConsumerWidget {
                 ),
               ],
             )
-          : Column(
-              children: [
-                Expanded(
-                  child: IndexedStack(index: index, children: pages),
-                ),
-                const PlayerBar(),
-                _MobileTabBar(
-                  index: index,
-                  navItems: navItems,
-                  onTap: switchTab,
-                ),
-              ],
+          : MobileShellBody(
+              pages: pages,
+              index: index,
+              navItems: navItems,
+              onTap: switchTab,
             ),
+    );
+  }
+}
+
+/// 手机端壳层内容区：安全区内容区（五个 tab 页）+ 迷你播放条 + 底部玻璃 Tab。
+///
+/// 单独公开的唯一目的是让 widget 测试可以直接验证「系统安全区只在壳层避让
+/// 一次」的接线，而不必拉起 `PlayerService`（media_kit Player）与 Hive 存档
+/// （测试可传 [playerBar] 换掉迷你播放条）。
+class MobileShellBody extends StatelessWidget {
+  const MobileShellBody({
+    super.key,
+    required this.pages,
+    required this.index,
+    required this.navItems,
+    required this.onTap,
+    this.playerBar = const PlayerBar(),
+  });
+
+  /// 五个 tab 页（顺序必须与 [navItems] 一致）。
+  final List<Widget> pages;
+  final int index;
+  final List<(IconData, String)> navItems;
+  final void Function(int) onTap;
+
+  /// 底部迷你播放条；默认 [PlayerBar]，widget 测试可注入空壳避免拉起播放器。
+  final Widget playerBar;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(
+          // 顶部状态栏/刘海/挖孔与横屏左右手势区只在这里避让一次；
+          // 页面自身不再各自处理（见 MobilePageSafeArea 的注释）。
+          child: MobilePageSafeArea(
+            child: IndexedStack(index: index, children: pages),
+          ),
+        ),
+        playerBar,
+        _MobileTabBar(index: index, navItems: navItems, onTap: onTap),
+      ],
     );
   }
 }
@@ -348,9 +383,17 @@ class _DesktopTopBar extends StatelessWidget {
                     color: JXColors.primary,
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    '搜索歌曲 / 歌手 / 专辑',
-                    style: TextStyle(fontSize: 12, color: textSub),
+                  // 文案宽度随可用宽度收缩：真实中文字体下原本就放得下，
+                  // 但等宽/异体字体或系统字体放大时固定宽度 220dp 会横向溢出
+                  // （QA 验收用例在测试字体下暴露 8.5px overflow）。加省略号只
+                  // 在放不下时生效，正常桌面渲染与改动前一致。
+                  Flexible(
+                    child: Text(
+                      '搜索歌曲 / 歌手 / 专辑',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: textSub),
+                    ),
                   ),
                 ],
               ),

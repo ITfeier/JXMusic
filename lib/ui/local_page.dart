@@ -13,6 +13,7 @@ import '../services/local_music.dart';
 import '../services/local_paths.dart';
 import 'dir_browser.dart';
 import 'glass.dart';
+import 'layout.dart';
 
 /// 播放队列回调：由外层（providers/playback 集成方）注入，页面不直接依赖播放链路。
 typedef PlayQueueCallback = void Function(List<Song> queue, int index);
@@ -382,7 +383,14 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 20, 16, 4),
+          // 顶部安全区由壳层 MobilePageSafeArea 统一避让（手机端为 0）；
+          // 桌面端保持原来的 20dp，桌面布局零变化。
+          padding: EdgeInsets.fromLTRB(
+            20,
+            jxPageTopInset(context, desktop: 20),
+            16,
+            4,
+          ),
           child: Row(
             children: [
               Expanded(

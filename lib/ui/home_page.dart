@@ -380,7 +380,9 @@ class _MobileHeader extends StatelessWidget {
         isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+      // 顶部安全区由壳层 MobilePageSafeArea 统一避让，这里只保留水平内边距
+      // （原来硬编码 top=14 会与安全区叠加成双重留白）。
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

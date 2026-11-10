@@ -81,9 +81,11 @@ class AccountNotifier extends StateNotifier<AccountSession?> {
 
 /// 本地曲库：播放历史 / 收藏 / 自建歌单（Hive 持久化）
 final libraryProvider = ChangeNotifierProvider<LibraryStore>((ref) {
-  final store = LibraryStore();
-  ref.onDispose(store.dispose);
-  return store;
+  // 不要在这里再写 `ref.onDispose(store.dispose)`：riverpod 2.x 的
+  // ChangeNotifierProvider 在 provider 释放时会自动 dispose notifier，重复 dispose
+  // 会在 debug 下触发 ChangeNotifier 的「used after being disposed」断言
+  // （pump 音乐库页的 widget 测试 teardown 必现）。
+  return LibraryStore();
 });
 
 /// 播放器服务（全局单例）。
@@ -134,7 +136,7 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     initialLoopMode: _readSettingsInt('loopMode', 2),
     initialSpeed: _readSettingsDouble('speed', 1.0),
   );
-  ref.onDispose(service.dispose);
+  // 同上：ChangeNotifierProvider 会自动 dispose service，避免二次 dispose 断言。
   return service;
 });
 

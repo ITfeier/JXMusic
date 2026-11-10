@@ -106,7 +106,14 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+          // 顶部安全区由壳层 MobilePageSafeArea 统一避让（手机端为 0）；
+          // 桌面端保持原来的 16dp，桌面布局零变化。
+          padding: EdgeInsets.fromLTRB(
+            16,
+            jxPageTopInset(context, desktop: 16),
+            16,
+            10,
+          ),
           child: GlassCard(
             borderRadius: BorderRadius.circular(30),
             padding: const EdgeInsets.symmetric(horizontal: 16),

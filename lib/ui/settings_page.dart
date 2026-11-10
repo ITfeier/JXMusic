@@ -15,6 +15,7 @@ import '../services/api/netease_api.dart';
 import '../services/api/qq_api.dart';
 import '../services/tray_service.dart';
 import 'glass.dart';
+import 'layout.dart';
 
 /// 设置页：主题 / 账号 / 同步 / 关于
 class SettingsPage extends ConsumerWidget {
@@ -27,7 +28,14 @@ class SettingsPage extends ConsumerWidget {
         isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 20, 16, 30),
+      // 顶部安全区由壳层 MobilePageSafeArea 统一避让（手机端为 0）；
+      // 桌面端保持原来的 20dp，桌面布局零变化。
+      padding: EdgeInsets.fromLTRB(
+        16,
+        jxPageTopInset(context, desktop: 20),
+        16,
+        30,
+      ),
       children: [
         const Padding(
           padding: EdgeInsets.only(left: 4, bottom: 16),

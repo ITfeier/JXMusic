@@ -126,7 +126,14 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 18, 16, 10),
+          // 顶部安全区由壳层 MobilePageSafeArea 统一避让（手机端为 0）；
+          // 桌面端保持原来的 18dp，桌面布局零变化。
+          padding: EdgeInsets.fromLTRB(
+            20,
+            jxPageTopInset(context, desktop: 18),
+            16,
+            10,
+          ),
           child: Row(
             children: [
               const Text(
@@ -495,8 +502,11 @@ class _EmptyHint extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 矮屏（横屏 640x360 时内容区只剩约 190dp）下空态放不下会触发
+    // RenderFlex overflow；Center + SingleChildScrollView 保证常规屏宽高下
+    // 仍然居中、矮屏时可滚动，不遮挡内容。
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,

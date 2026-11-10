@@ -9,6 +9,48 @@ bool isDesktopLayout(BuildContext context) {
   return MediaQuery.of(context).size.width >= 840;
 }
 
+/// 手机端主页面顶部呼吸间距（dp）：状态栏/刘海/挖孔之下再留一点视觉空隙。
+///
+/// 由 [MobilePageSafeArea] 在壳层统一追加，页面自身不再重复留白。
+const double kJxMobilePageTopGap = 10;
+
+/// 手机端主页面安全区容器（ShellPage 手机分支的统一入口）。
+///
+/// 为什么放在壳层：五个 tab 页共用同一块内容区，安全区只需在这里避让一次，
+/// 页面内部不再各自计算 `MediaQuery.padding.top`，避免「漏改某页」和
+/// 「安全区 + 页面硬编码 padding」叠加造成的双重留白。
+///
+/// - 顶部：状态栏/刘海/挖孔（必做），外加 [kJxMobilePageTopGap] 呼吸间距；
+/// - 左右：横屏时的挖孔/手势区避让（竖屏通常是 0，不影响布局）；
+/// - 底部：保持现状，不在这里重复（PlayerBar / 底部 TabBar 各自处理）；
+/// - 桌面布局（宽度 >= 840dp）：原样返回 child，桌面行为零变化（G4）。
+class MobilePageSafeArea extends StatelessWidget {
+  const MobilePageSafeArea({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isDesktopLayout(context)) return child;
+    return SafeArea(
+      top: true,
+      bottom: false,
+      left: true,
+      right: true,
+      child: Padding(
+        padding: const EdgeInsets.only(top: kJxMobilePageTopGap),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// 主页面顶部内边距：手机端安全区已由 [MobilePageSafeArea] 统一避让，
+/// 页面自身填 0；桌面端保持各页原有数值，桌面布局零变化（G4）。
+double jxPageTopInset(BuildContext context, {required double desktop}) {
+  return isDesktopLayout(context) ? desktop : 0;
+}
+
 /// 播放时长格式化：秒 -> mm:ss
 String jxFormatDuration(int seconds) {
   if (seconds <= 0) return '--:--';
