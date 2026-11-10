@@ -173,6 +173,12 @@ class KuGouApi implements MusicPlatformApi {
   Future<String> getLyrics(Song song) async {
     // 官方歌词链路：krcs.kugou.com/search 找候选 -> lyrics.kugou.com/download 取 LRC
     // （返回的 content 是 base64 的 LRC 文本，且带 UTF-8 BOM）
+    // PRD R1.2：两跳都补 m.kugou.com Referer（JXHttp 全局默认 Referer 是
+    // music.163.com，属加固；已登录时顺带发酷狗会话 cookie，只发 kugou.com 域）。
+    final headers = <String, String>{
+      'Referer': 'https://m.kugou.com/',
+      if (_cookies.isNotEmpty) 'Cookie': _cookieStr,
+    };
     try {
       final search = await JXHttp.dio.get(
         'https://krcs.kugou.com/search',
@@ -185,6 +191,7 @@ class KuGouApi implements MusicPlatformApi {
           'hash': song.id,
           'album_audio_id': '',
         },
+        options: Options(headers: headers),
       );
       final candidates = (search.data['candidates'] as List?) ?? const [];
       if (candidates.isEmpty) return '';
@@ -202,6 +209,7 @@ class KuGouApi implements MusicPlatformApi {
           'fmt': 'lrc',
           'charset': 'utf8',
         },
+        options: Options(headers: headers),
       );
       final content = download.data['content'] as String?;
       if (content == null || content.isEmpty) return '';

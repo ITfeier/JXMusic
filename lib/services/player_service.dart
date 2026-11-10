@@ -7,6 +7,15 @@ import '../core/constants.dart';
 import '../models/song.dart';
 import '../models/lyric.dart';
 
+/// 歌词加载状态（播放页三态渲染 + 重试用，PRD R1.3 契约：签名不得改）。
+///
+/// - [idle]：初始状态 / 停止播放 / 未注入歌词解析器；
+/// - [loading]：切歌后正在异步请求歌词；
+/// - [ready]：已拿到非空歌词；
+/// - [empty]：请求成功但无歌词；
+/// - [error]：请求抛错（网络异常等），UI 应展示重试按钮。
+enum LyricsStatus { idle, loading, ready, empty, error }
+
 /// 切换音源时替换当前队列项（纯函数，便于单测）。
 ///
 /// 返回新队列与新索引：长度不变、[currentIndex] 位置被 [song] 替换，其它元素原样保留；
@@ -121,6 +130,21 @@ class PlayerService extends ChangeNotifier {
   List<LyricLine> get lyrics => _lyrics;
   int _lyricIndex = -1;
   int get lyricIndex => _lyricIndex;
+
+  LyricsStatus _lyricsStatus = LyricsStatus.idle;
+
+  /// 当前歌词加载状态（初始 [LyricsStatus.idle]）。
+  LyricsStatus get lyricsStatus => _lyricsStatus;
+
+  /// 当前歌词请求所属曲目（globalId）：
+  /// 用于「同一首歌重复 playSong 不重复请求」和丢弃过期响应。
+  String? _lyricsSongId;
+
+  /// 歌词请求序号：每次发起请求自增，异步返回时对比，过期响应直接丢弃。
+  int _lyricsRequestId = 0;
+
+  /// dispose 之后异步回调不得 notifyListeners（否则 debug 下断言失败）。
+  bool _disposed = false;
 
   StreamSubscription? _posSub;
   StreamSubscription? _durSub;
@@ -272,6 +296,10 @@ class PlayerService extends ChangeNotifier {
     _currentIndex = index;
     var song = _queue[index];
 
+    // 歌词与音频解耦（PRD R1.3）：切歌即清空旧歌词 → loading → 立即异步请求。
+    // 不依赖 _player.open 成功：无直链 / 本地解密失败时歌词仍应能展示。
+    _loadLyricsFor(song);
+
     // 本地曲目（含 NCM/QMC/KGM 等加密格式）即使 audioUrl 非空也要走 resolver：
     // 普通格式原样返回源路径，加密格式返回解密缓存路径。
     // 解析结果只用于打开播放器，**不写回队列/播放历史**：历史/收藏必须保留
@@ -314,8 +342,6 @@ class PlayerService extends ChangeNotifier {
       return;
     }
 
-    _lyrics = const [];
-    _lyricIndex = -1;
     try {
       // 平台 CDN 播放需对应 Referer 头（QQ/酷狗/网易云各不相同）
       Map<String, String>? headers;
@@ -328,28 +354,85 @@ class PlayerService extends ChangeNotifier {
       }
       await _player?.open(Media(playUrl, httpHeaders: headers), play: true);
       onSongStarted?.call(song);
-      _loadLyrics(song);
     } catch (e) {
       debugPrint('[JXMusic] 播放失败: $e');
     }
     notifyListeners();
   }
 
-  /// 异步加载歌词；切歌后到达的旧响应会被丢弃
-  void _loadLyrics(Song song) {
+  /// 切歌时加载歌词（PRD R1.3）：
+  /// - 清空旧歌词 → 置 [LyricsStatus.loading] → 立即异步请求；
+  /// - 同一首歌（globalId 相同）已加载/加载中时不重复请求（[force] 仅供重试）；
+  /// - 响应返回时校验请求序号与当前曲目，过期响应丢弃；
+  /// - 抛错 → [LyricsStatus.error]；成功但为空 → [LyricsStatus.empty]。
+  void _loadLyricsFor(Song song, {bool force = false}) {
+    final gid = song.globalId;
+    final alreadyLoaded = _lyricsSongId == gid &&
+        (_lyricsStatus == LyricsStatus.loading ||
+            _lyricsStatus == LyricsStatus.ready ||
+            _lyricsStatus == LyricsStatus.empty);
+    if (!force && alreadyLoaded) return;
+
+    _lyricsSongId = gid;
+    _lyrics = const [];
+    _lyricIndex = -1;
+    final token = ++_lyricsRequestId;
+
     final resolver = lyricsResolver;
-    if (resolver == null) return;
-    resolver(song)
-        .then((lines) {
-          if (currentSong?.globalId != song.globalId) return;
-          _lyrics = lines;
-          _lyricIndex = -1;
-          _updateLyricIndex();
-          notifyListeners();
-        })
-        .catchError((Object e) {
-          debugPrint('[JXMusic] 歌词加载失败: $e');
-        });
+    if (resolver == null) {
+      // 未注入解析器（例如纯队列测试）：不发起请求，保持 idle。
+      _lyricsStatus = LyricsStatus.idle;
+      notifyListeners();
+      return;
+    }
+
+    _lyricsStatus = LyricsStatus.loading;
+    notifyListeners();
+
+    Future<List<LyricLine>> pending;
+    try {
+      pending = resolver(song);
+    } catch (e) {
+      _applyLyricsError(song, token, e);
+      return;
+    }
+    pending.then((lines) {
+      if (!_isCurrentLyricsResponse(song, token)) return;
+      _lyrics = List<LyricLine>.unmodifiable(lines);
+      _lyricIndex = -1;
+      _lyricsStatus =
+          _lyrics.isEmpty ? LyricsStatus.empty : LyricsStatus.ready;
+      _updateLyricIndex();
+      notifyListeners();
+    }).catchError((Object e) {
+      _applyLyricsError(song, token, e);
+    });
+  }
+
+  /// 歌词请求异常：校验响应仍属于当前曲目/请求后，置 error 并通知一次。
+  void _applyLyricsError(Song song, int token, Object error) {
+    if (!_isCurrentLyricsResponse(song, token)) return;
+    _lyrics = const [];
+    _lyricIndex = -1;
+    _lyricsStatus = LyricsStatus.error;
+    debugPrint('[JXMusic] 歌词加载失败（${song.title}）: $error');
+    notifyListeners();
+  }
+
+  /// 响应是否仍属于「当前曲目 + 当前请求」；dispose 后一律丢弃。
+  bool _isCurrentLyricsResponse(Song song, int token) =>
+      !_disposed &&
+      token == _lyricsRequestId &&
+      currentSong?.globalId == song.globalId;
+
+  /// 重新请求当前曲目歌词（播放页「重试」按钮调用）。
+  /// 无当前曲目 / 正在加载中 / 已 dispose 时安全 no-op。
+  void retryLyrics() {
+    if (_disposed) return;
+    final song = currentSong;
+    if (song == null) return;
+    if (_lyricsStatus == LyricsStatus.loading) return;
+    _loadLyricsFor(song, force: true);
   }
 
   Future<void> play() => _player?.play() ?? Future.value();
@@ -424,10 +507,14 @@ class PlayerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 注入歌词
+  /// 注入歌词（兼容既有调用与测试）：同步置 ready/empty。
   void setLyrics(List<LyricLine> lines) {
     _lyrics = lines;
     _lyricIndex = -1;
+    _lyricsSongId = currentSong?.globalId;
+    // 作废在途请求，避免异步返回覆盖手动注入的歌词
+    _lyricsRequestId++;
+    _lyricsStatus = lines.isEmpty ? LyricsStatus.empty : LyricsStatus.ready;
     _updateLyricIndex();
     notifyListeners();
   }
@@ -444,11 +531,17 @@ class PlayerService extends ChangeNotifier {
     _queue.clear();
     _currentIndex = -1;
     _lyrics = const [];
+    _lyricIndex = -1;
+    _lyricsSongId = null;
+    _lyricsRequestId++; // 作废在途歌词响应
+    _lyricsStatus = LyricsStatus.idle;
     notifyListeners();
   }
 
   @override
   void dispose() {
+    _disposed = true;
+    _lyricsRequestId++; // 在途歌词响应不再 notify
     _posSub?.cancel();
     _durSub?.cancel();
     _playSub?.cancel();

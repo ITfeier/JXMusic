@@ -13,8 +13,9 @@ import '../../services/player_service.dart';
 import '../dialogs.dart';
 import '../glass.dart';
 import '../layout.dart';
+import 'vinyl_disc.dart';
 
-/// 全屏播放页（液态玻璃 + 旋转封面 + 歌词）
+/// 全屏播放页（液态玻璃 + 黑胶唱片 + 歌词三态）
 class PlayerPage extends ConsumerStatefulWidget {
   const PlayerPage({super.key});
 
@@ -22,48 +23,8 @@ class PlayerPage extends ConsumerStatefulWidget {
   ConsumerState<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends ConsumerState<PlayerPage>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _spin;
+class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _showLyrics = false;
-  Timer? _lyricLoadTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _spin = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 30),
-    )..repeat();
-    _loadLyricsIfNeeded();
-  }
-
-  @override
-  void dispose() {
-    _spin.dispose();
-    _lyricLoadTimer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadLyricsIfNeeded() async {
-    _lyricLoadTimer?.cancel();
-    _lyricLoadTimer = Timer(const Duration(milliseconds: 1200), () async {
-      if (!mounted) return;
-      // 首页/搜索页播放时通常已经加载过歌词，避免重复请求
-      final current = ref.read(playerServiceProvider);
-      if (current.lyrics.isNotEmpty) return;
-      final song = current.currentSong;
-      if (song == null) return;
-      final hub = ref.read(musicHubProvider);
-      final api = hub.api(song.platform);
-      if (api == null) return;
-      final lrc = await api.getLyrics(song);
-      if (!mounted) return;
-      ref
-          .read(playerServiceProvider)
-          .setLyrics(LyricParser.parseLrc(lrc));
-    });
-  }
 
   String _fmt(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
@@ -148,14 +109,16 @@ class _PlayerPageState extends ConsumerState<PlayerPage>
                       ? _LyricsView(
                           key: const ValueKey('lyrics'),
                           lyrics: player.lyrics,
+                          status: player.lyricsStatus,
                           currentIndex: player.lyricIndex,
+                          onRetry: player.retryLyrics,
                           textColor: textColor,
                           textSub: textSub,
                         )
                       : _AlbumArtView(
                           key: const ValueKey('art'),
                           song: song,
-                          spin: _spin,
+                          spinning: player.playing,
                           textColor: textColor,
                           textSub: textSub,
                         ),
@@ -551,17 +514,19 @@ double _jxPlayerTextBlockHeight(TextScaler textScaler, double maxHeight) {
       chip;
 }
 
-/// 专辑封面视图（旋转 + 液态玻璃氛围）
+/// 专辑封面视图（圆形黑胶唱片：播放中旋转、暂停停住 + 文案）
 class _AlbumArtView extends StatelessWidget {
   final Song song;
-  final Animation<double> spin;
+
+  /// 是否播放中：交给 [JXVinylDisc] 控制 30s/圈旋转，暂停时停在当前角度。
+  final bool spinning;
   final Color textColor;
   final Color textSub;
 
   const _AlbumArtView({
     super.key,
     required this.song,
-    required this.spin,
+    required this.spinning,
     required this.textColor,
     required this.textSub,
   });
@@ -585,9 +550,10 @@ class _AlbumArtView extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (size > 0) ...[
-                RotationTransition(
-                  turns: spin,
-                  child: _GlowCover(url: song.coverUrl, size: size),
+                JXVinylDisc(
+                  coverUrl: song.coverUrl,
+                  size: size,
+                  spinning: spinning,
                 ),
                 SizedBox(height: gap),
               ],
@@ -638,58 +604,22 @@ class _AlbumArtView extends StatelessWidget {
   }
 }
 
-/// 液态玻璃大封面（外圈光环 + 深投影）
-class _GlowCover extends StatelessWidget {
-  final String url;
-  final double size;
-
-  const _GlowCover({required this.url, required this.size});
-
-  @override
-  Widget build(BuildContext context) {
-    final r = size * 0.14;
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(r),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.white.withValues(alpha: 0.05),
-            blurRadius: 0,
-            spreadRadius: 14,
-          ),
-          BoxShadow(
-            color: Colors.white.withValues(alpha: 0.035),
-            blurRadius: 0,
-            spreadRadius: 30,
-          ),
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.5),
-            blurRadius: 40,
-            offset: const Offset(0, 20),
-          ),
-        ],
-      ),
-      child: GlassCover(
-          url: url,
-          size: size,
-          borderRadius: BorderRadius.circular(r)),
-    );
-  }
-}
-
-/// 歌词滚动视图（当前行自动滚动到视口中央）
+/// 歌词滚动视图：按 [LyricsStatus] 渲染加载中 / 暂无歌词 / 加载失败可重试 /
+/// 正常滚动高亮列表（当前行自动滚动到视口中央）。
 class _LyricsView extends StatefulWidget {
   final List<LyricLine> lyrics;
+  final LyricsStatus status;
   final int currentIndex;
+  final VoidCallback onRetry;
   final Color textColor;
   final Color textSub;
 
   const _LyricsView({
     super.key,
     required this.lyrics,
+    required this.status,
     required this.currentIndex,
+    required this.onRetry,
     required this.textColor,
     required this.textSub,
   });
@@ -756,20 +686,11 @@ class _LyricsViewState extends State<_LyricsView> {
 
   @override
   Widget build(BuildContext context) {
+    // 歌词三态（PRD R2）：加载中不得显示「暂无歌词」；失败可重试。
+    if (widget.status == LyricsStatus.loading) return _loadingView();
+    if (widget.status == LyricsStatus.error) return _errorView();
     final lyrics = widget.lyrics;
-    if (lyrics.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.lyrics_rounded, size: 48, color: widget.textSub),
-            const SizedBox(height: 12),
-            Text('暂无歌词',
-                style: TextStyle(color: widget.textSub, fontSize: 14)),
-          ],
-        ),
-      );
-    }
+    if (lyrics.isEmpty) return _emptyView();
     return ListView.builder(
       controller: _controller,
       physics: const BouncingScrollPhysics(),
@@ -797,6 +718,69 @@ class _LyricsViewState extends State<_LyricsView> {
           ),
         );
       },
+    );
+  }
+
+  /// 加载中：居中转圈 + 「歌词加载中…」
+  Widget _loadingView() {
+    return Center(
+      child: Column(
+        key: const Key('lyricsLoading'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 26,
+            height: 26,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.4,
+              color: JXColors.primary,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text('歌词加载中…',
+              style: TextStyle(color: widget.textSub, fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
+  /// 无歌词：图标 + 「暂无歌词」
+  Widget _emptyView() {
+    return Center(
+      child: Column(
+        key: const Key('lyricsEmpty'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.lyrics_rounded, size: 48, color: widget.textSub),
+          const SizedBox(height: 12),
+          Text('暂无歌词',
+              style: TextStyle(color: widget.textSub, fontSize: 14)),
+        ],
+      ),
+    );
+  }
+
+  /// 加载失败：图标 + 「歌词加载失败」+ 重试按钮（调 player.retryLyrics()）
+  Widget _errorView() {
+    return Center(
+      child: Column(
+        key: const Key('lyricsError'),
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.cloud_off_rounded, size: 44, color: widget.textSub),
+          const SizedBox(height: 12),
+          Text('歌词加载失败',
+              style: TextStyle(color: widget.textSub, fontSize: 14)),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            key: const Key('lyricsRetryButton'),
+            onPressed: widget.onRetry,
+            icon: const Icon(Icons.refresh_rounded, size: 18),
+            label: const Text('重试'),
+            style: TextButton.styleFrom(foregroundColor: JXColors.primary),
+          ),
+        ],
+      ),
     );
   }
 }

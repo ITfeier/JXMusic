@@ -1,0 +1,65 @@
+========================================================================
+T3 QA 接口探测  2026-11-10 00:08:42
+UA: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36
+JXHttp 全局 Referer: https://music.163.com/
+========================================================================
+
+--- QQ 搜索（全局 Referer，与 App 搜索一致）---
+search status=200 songmid=0039MnYb0qxYhV name=晴天
+[PASS] QQ 搜索链路可用（取到 songmid）  | songmid=0039MnYb0qxYhV
+
+--- QQ 歌词：不覆盖 Referer（App 修复前现状，Referer=music.163.com）---
+status=200 retcode=-1310 lyric_len=0 head={"retcode":-1310,"code":-1310,"subcode":-1310}
+[PASS] QQ 无平台 Referer → retcode=-1310 且 lyrics 为空（根因复现）  | retcode=-1310 lyric_len=0
+
+--- QQ 歌词：带 Referer https://y.qq.com/（修复口径）---
+status=200 retcode=0 lyric_len=1388 head={"retcode":0,"code":0,"subcode":0,"lyric":"[ti:晴天]\n[ar:周杰伦]\n[al:叶惠美]\n[by:]\n[offset:0]\n[00:00.00]晴天 - 周杰伦 (Jay Chou)\n[00:02.25]词：周杰伦\n[00:04.50]曲：周杰伦\n[00:06.75]编曲：周杰伦\n[00:09
+LRC head: [ti:晴天]\n[ar:周杰伦]\n[al:叶惠美]\n[by:]\n[offset:0]\n[00:00.00]晴天 - 周杰伦 (Jay Chou)\n[00:02.25]词：周杰伦\n[00:04.50]曲：周杰
+[PASS] QQ 带 Referer y.qq.com → retcode=0 且 LRC 非空（修复口径）  | retcode=0 lyric_len=1388
+[PASS] QQ LRC 含时间标签（可被 LyricParser 解析）  | contains '[' = True
+
+--- QQ 歌词：不传 nobase64（base64 响应）带 Referer y.qq.com ---
+retcode=0 raw_len=3400 looks_base64=True decoded_len=1388
+[PASS] QQ base64 响应可解码为 UTF-8 LRC（修复需自动解码）  | looks_base64=True decoded_len=1388
+
+--- 网易云完整链路 ---
+search status=200 id=2668397359 name=晴天 (原唱 周杰伦)
+[PASS] 网易云搜索链路可用（取到 song id）  | id=2668397359
+lyric status=200 code=200 lyric_len=1471 head=[00:00.000] 作词 : Chieh-lun Chou\n[00:00.000] 作曲 : Chieh-lun Chou\n[00:00.000]晴天 - 周杰伦 (Jay Chou)\n[00:0
+[PASS] 网易云歌词链路 → code=200 且歌词非空  | code=200 lyric_len=1471
+
+--- 酷狗完整链路 ---
+search status=200 hash=B3A52A7A958BF0AED0EBFBA2E9A818B7 name=<em>晴天</em>
+[PASS] 酷狗搜索链路可用（取到 FileHash）  | hash=B3A52A7A958BF0AED0EBFBA2E9A818B7
+krcs status=200 status_field=200 candidates=20
+[PASS] 酷狗 krcs 找到歌词候选  | candidates=20
+download status=200 len=3488 decoded_len=1455 head=[ti:晴天]\n[ar:周杰伦]\n[al:叶惠美]\n[by:]\n[offset:0]\n[00:00.00]晴天 - 周杰伦 (Jay Chou)\n[00:02.25]词：周杰伦\n[00:0
+[PASS] 酷狗歌词下载 → 解码后非空  | decoded_len=1455
+
+========================================================================
+汇总：10 项检查，10 通过，0 失败
+  [PASS] QQ 搜索链路可用（取到 songmid）
+  [PASS] QQ 无平台 Referer → retcode=-1310 且 lyrics 为空（根因复现）
+  [PASS] QQ 带 Referer y.qq.com → retcode=0 且 LRC 非空（修复口径）
+  [PASS] QQ LRC 含时间标签（可被 LyricParser 解析）
+  [PASS] QQ base64 响应可解码为 UTF-8 LRC（修复需自动解码）
+  [PASS] 网易云搜索链路可用（取到 song id）
+  [PASS] 网易云歌词链路 → code=200 且歌词非空
+  [PASS] 酷狗搜索链路可用（取到 FileHash）
+  [PASS] 酷狗 krcs 找到歌词候选
+  [PASS] 酷狗歌词下载 → 解码后非空
+========================================================================
+
+【命令原文】
+$env:PYTHONIOENCODING='utf-8'
+& C:\Users\18937\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe `
+  "D:\Project\yinyue\JXMusic\docs\projects\歌词与黑胶改造\evidence\lyric_probe.py"
+exit code = 0
+
+【说明】
+- 本探测复刻 App 请求头：UA 与 lib/services/api/http.dart 一致，默认 Referer=music.163.com；
+  QQ 修复口径 = Referer: https://y.qq.com/；酷狗加固口径 = Referer: https://m.kugou.com/。
+- 酷狗搜索原脚本用了 mobilecdn.kugou.com，实测该域证书主机名不匹配（SSL CERTIFICATE_VERIFY_FAILED），
+  已改用 App 实际使用的 songsearch.kugou.com（kugou_api.dart `_search`），链路 10/10 通过。
+- 结论：根因复现（-1310）+ 修复口径成立（retcode=0、LRC 1388 字符）+ 网易云/酷狗链路正常。
+- 忠实性说明：base64 判定行原输出为 `<re.Match object; span=(0, 3400), ...>`，此处为了可读简写为 `True`，长度/结论未改。

@@ -313,12 +313,21 @@ class NeteaseApi implements MusicPlatformApi {
   Future<String> getLyrics(Song song) async {
     // 1) 公开 GET 接口（2026-11 实测可用）
     try {
-      final resp = await JXHttp.dio.get('$_base/song/lyric', queryParameters: {
-        'id': song.id,
-        'lv': -1,
-        'kv': -1,
-        'tv': -1,
-      });
+      final resp = await JXHttp.dio.get(
+        '$_base/song/lyric',
+        queryParameters: {
+          'id': song.id,
+          'lv': -1,
+          'kv': -1,
+          'tv': -1,
+        },
+        options: Options(headers: {
+          // 已登录时附 MUSIC_U 等会话 cookie（只发 music.163.com 官方域）；
+          // 未登录时保持公开 GET 行为不变（PRD R1.2）。
+          if (_cookies.isNotEmpty) 'Cookie': _cookieStr(),
+          'Referer': 'https://music.163.com/',
+        }),
+      );
       final data = resp.data;
       final lrc = data is Map ? data['lrc'] : null;
       final text = (lrc is Map ? lrc['lyric'] as String? : null) ?? '';

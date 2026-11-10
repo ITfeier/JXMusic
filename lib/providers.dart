@@ -118,11 +118,10 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
   Future<List<LyricLine>> resolveLyrics(Song song) async {
     final api = hub.api(song.platform);
     if (api == null) return const [];
-    try {
-      return LyricParser.parseLrc(await api.getLyrics(song));
-    } catch (_) {
-      return const [];
-    }
+    // 不在这里吞异常：PlayerService 依据「resolver 抛错」置 LyricsStatus.error，
+    // 播放页才会展示「歌词加载失败 + 重试」（PRD R1.3 / R1.2 三态）。
+    // 各平台 getLyrics 自身按契约把「接口返回空/失败」变成空串（→ empty 状态）。
+    return LyricParser.parseLrc(await api.getLyrics(song));
   }
 
   final service = PlayerService(

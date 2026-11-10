@@ -8,8 +8,8 @@ import 'package:jxmusic/providers.dart';
 import 'package:jxmusic/services/api/music_api.dart';
 import 'package:jxmusic/services/player_service.dart';
 import 'package:jxmusic/theme.dart';
-import 'package:jxmusic/ui/glass.dart' show GlassCover;
 import 'package:jxmusic/ui/player/player_page.dart';
+import 'package:jxmusic/ui/player/vinyl_disc.dart';
 
 /// 播放页布局回归测试（用户真机反馈）：
 /// 360x640dp 下 Expanded 给 `_AlbumArtView` 的高度不足，Column 溢出后
@@ -17,10 +17,11 @@ import 'package:jxmusic/ui/player/player_page.dart';
 /// 1) 360x640dp 不出现 RenderFlex overflow；
 /// 2) 音源按钮只显示「音源」二字，且宽度是紧凑胶囊（64~120dp）——
 ///    历史回归：Container.alignment 让按钮撑满整行，变成灰色通栏；
-/// 3) 封面按可用高度自适应，不压住控制区；点击按钮仍弹「选择音源」面板。
+/// 3) 封面（黑胶唱片 JXVinylDisc）按可用高度自适应，不压住控制区；
+///    点击按钮仍弹「选择音源」面板。
 ///
 /// 说明：用 `PlayerService(initPlayer: false)`（不加载 libmpv）+ 空 MusicApiHub，
-/// 全程不联网；旋转动画一直在跑，所以只做有限次 pump，不用 pumpAndSettle。
+/// 全程不联网；测试里 playing=false，唱片不旋转（暂停态），只做有限次 pump。
 const String _longTitle = '这是一首名字特别长的歌用来验证两行标题是否会撑破播放页布局';
 
 Song _song({required int platform}) => Song(
@@ -58,8 +59,7 @@ Future<void> _pumpPlayerPage(WidgetTester tester) async {
   await tester.pump(const Duration(milliseconds: 300));
 }
 
-/// 卸载页面：取消失常的旋转动画与「延迟加载歌词」定时器，
-/// 否则测试结束会报 pending timer。
+/// 卸载页面：释放唱片内部的 AnimationController，避免测试结束残留 ticker。
 Future<void> _unmount(WidgetTester tester) async {
   await tester.pumpWidget(const SizedBox());
   await tester.pump();
@@ -110,11 +110,18 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('选择音源'), findsOneWidget, reason: '点击「音源」应弹出选择音源面板');
 
-    // 封面按可用高度收缩：宽 360 时原固定尺寸是 223.2，这里必须更小
-    final coverSide = tester.getSize(find.byType(GlassCover)).width;
+    // 封面已换成圆形黑胶唱片（JXVinylDisc）：宽 360 时原固定尺寸是 223.2，
+    // 360x640dp 下必须按可用高度收缩，且不小于 140 下限。
+    final discFinder = find.byType(JXVinylDisc);
+    expect(discFinder, findsOneWidget, reason: '播放页大封面应为 JXVinylDisc');
+    expect(find.byKey(const Key('playerVinylDisc')), findsOneWidget);
+    final coverSide = tester.getSize(discFinder).width;
     expect(coverSide, lessThan(360 * 0.62),
         reason: '360x640dp 下封面应小于「宽度*0.62」，否则没有按高度自适应');
     expect(coverSide, greaterThanOrEqualTo(140), reason: '封面不应小于 140 下限');
+    // 唱片必须是圆形：正方形外框内标签/轴孔都居中（圆的判定由 vinyl_disc_test 覆盖）
+    expect(tester.getSize(discFinder).height, closeTo(coverSide, 0.01),
+        reason: '黑胶唱片外框必须是正方形（内部绘制圆形盘体）');
 
     await _unmount(tester);
   });

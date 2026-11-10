@@ -330,16 +330,67 @@ class QQMusicApi implements MusicPlatformApi {
   @override
   Future<String> getLyrics(Song song) async {
     try {
-      final resp = await JXHttp.dio.get(_lyric, queryParameters: {
-        'songmid': song.id,
-        'format': 'json',
-        'nobase64': 1,
-      });
-      final lyric = resp.data['lyric'] as String?;
-      return lyric ?? '';
-    } catch (_) {
+      // 关键修复（PRD R1.1 / 用户反馈「歌词无法展示」主因）：必须带 QQ 音乐域名
+      // Referer。JXHttp 全局默认 Referer 是 music.163.com，QQ 歌词接口会把站外
+      // 来源判为无效并返回 {"retcode":-1310}（歌词恒为空）；带 y.qq.com 后
+      // retcode=0 + 完整 LRC（2026-11 实测）。
+      final resp = await JXHttp.dio.get(
+        _lyric,
+        queryParameters: {
+          'songmid': song.id,
+          'format': 'json',
+          'nobase64': 1,
+        },
+        options: Options(headers: {
+          'Referer': 'https://y.qq.com/',
+          // 已登录时带音乐包 cookie（与 getPlayUrl 同口径；只发 QQ 官方域）
+          if (_loginCookies.isNotEmpty) 'Cookie': _cookieStr(_loginCookies),
+        }),
+      );
+      final data = resp.data;
+      final retcode = data is Map ? data['retcode'] : null;
+      if (retcode != null && '$retcode' != '0') {
+        _lyricLog('QQ 歌词接口 retcode=$retcode（songmid=${song.id}）');
+        return '';
+      }
+      var lyric = data is Map ? data['lyric'] as String? : null;
+      if (lyric == null || lyric.trim().isEmpty) {
+        _lyricLog('QQ 歌词为空（songmid=${song.id}）');
+        return '';
+      }
+      // 服务端忽略 nobase64=1 时会返回 base64：LRC 一定含时间标签 '['，
+      // 不含 '[' 的按 base64 兜底解码；解不出来就原样返回（交给解析器）。
+      if (!lyric.contains('[')) {
+        final decoded = _tryDecodeBase64Lyric(lyric);
+        if (decoded != null && decoded.isNotEmpty) lyric = decoded;
+      }
+      return lyric;
+    } catch (e) {
+      _lyricLog('QQ 歌词请求失败（songmid=${song.id}）: $e');
       return '';
     }
+  }
+
+  /// 把 base64 编码的歌词解码为 UTF-8 文本；不是合法 base64 时返回 null。
+  static String? _tryDecodeBase64Lyric(String raw) {
+    try {
+      final compact = raw.replaceAll(RegExp(r'\s'), '');
+      if (compact.isEmpty || compact.length % 4 != 0) return null;
+      final text = utf8.decode(base64Decode(compact), allowMalformed: true);
+      return text.trim();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 歌词链路日志（失败时只输出一次，不抛出）。
+  ///
+  /// 这里用 print 而非 debugPrint：本文件被 `dart run tool/*.dart` 系列探针脚本
+  /// import，加 `package:flutter/foundation.dart` 会因 dart:ui 依赖破坏纯 Dart
+  /// 执行（与文件内既有的登录诊断日志同一约定）。
+  void _lyricLog(String message) {
+    // ignore: avoid_print
+    print('[JXMusic][歌词] $message');
   }
 
   /// 构造「歌单广场」请求 URI（单独抽出便于单测）。
