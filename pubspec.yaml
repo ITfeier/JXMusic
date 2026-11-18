@@ -1,10 +1,10 @@
 name: jxmusic
 description: "JXMusic - 聚合音乐播放器（QQ音乐/网易云/酷狗/本地音乐）"
 publish_to: 'none'
-version: 0.10.0+19
+version: 0.11.0+27
 
 environment:
-  sdk: ^3.13.7
+  sdk: ">=3.13.5 <4.0.0"
 
 dependencies:
   flutter:
@@ -40,6 +40,33 @@ dependencies:
   # 二维码（扫码登录本地渲染）
   qr_flutter: ^4.1.0
   tray_manager: ^0.8.3
+  # ---- OpenHarmony（鸿蒙）平台适配 ----
+  # path_provider 鸿蒙实现（纯 Dart FFI，vendored 自 CPF-Flutter/flutter_packages）
+  path_provider_ohos:
+    path: packages/path_provider_ohos
+  # media_kit 鸿蒙原生 libmpv 库（仅 ohos 平台注册）
+  media_kit_libs_ohos_video:
+    git:
+      url: https://gitcode.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: libs/ohos/media_kit_libs_ohos_video
+      ref: main
+
+# media_kit 主包切换到 CPF-Flutter 鸿蒙适配版（增加 ohos 平台注册）
+dependency_overrides:
+  media_kit:
+    git:
+      url: https://gitcode.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: media_kit
+      ref: main
+  media_kit_video:
+    git:
+      url: https://gitcode.com/CPF-Flutter/fluttertpc_flutter_media_kit.git
+      path: media_kit_video
+      ref: main
+  # cnativeapi（tray_manager 传递依赖）hook 不支持 OpenHarmony 工具链，
+  # 本地副本跳过 OHOS 构建，其余平台行为不变
+  cnativeapi:
+    path: packages/cnativeapi
 dev_dependencies:
   flutter_test:
     sdk: flutter

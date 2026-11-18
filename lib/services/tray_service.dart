@@ -104,12 +104,19 @@ class TrayService with TrayListener, WindowListener {
     await windowManager.hide();
   }
 
-  /// 真正退出应用（托盘菜单 / 设置页都走这里）
+  /// 真正退出应用（托盘菜单 / 设置页都走这里）。
+  ///
+  /// 非桌面平台（如 ohos 手机）没有 window_manager 实现，走这里会抛
+  /// MissingPluginException 导致「退出应用」按钮无效：直接 exit(0) 退出进程。
   Future<void> exitApp() async {
     try {
       trayManager.removeListener(this);
       await trayManager.destroy();
     } catch (_) {}
+    if (!supported) {
+      exit(0);
+      return;
+    }
     await windowManager.setPreventClose(false);
     await windowManager.destroy();
   }

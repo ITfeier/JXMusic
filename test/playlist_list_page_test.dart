@@ -1,6 +1,9 @@
+﻿import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 
 import 'package:jxmusic/core/constants.dart';
 import 'package:jxmusic/models/playlist.dart';
@@ -13,7 +16,7 @@ import 'package:jxmusic/ui/playlist_detail_page.dart';
 import 'package:jxmusic/ui/playlist_list_page.dart';
 
 /// 假平台：按 page 返回预设歌单，记录每页请求次数与失败开关。
-class _FakePlaylistApi implements MusicPlatformApi {
+class _FakePlaylistApi extends MusicPlatformApi {
   _FakePlaylistApi({Map<int, List<Playlist>>? pages, this.failFirst = false})
       : pages = pages ?? {};
 
@@ -60,6 +63,18 @@ class _FakePlaylistApi implements MusicPlatformApi {
 
   @override
   Future<AccountSession?> pollQrLogin(String key) async => null;
+
+  @override
+  Future<AccountSession?> loginByPassword(
+          String username, String password) async =>
+      null;
+
+  @override
+  Future<bool> sendSmsCode(String mobile) async => false;
+
+  @override
+  Future<AccountSession?> loginBySmsCode(String mobile, String code) async =>
+      null;
 
   @override
   void restoreSession(AccountSession? session) {}
@@ -117,6 +132,16 @@ Future<void> _pumpPage(WidgetTester tester, MusicPlatformApi api) async {
 }
 
 void main() {
+  setUpAll(() async {
+    // PlaylistDetailPage 会 watch libraryProvider（收藏歌单星标），
+    // LibraryStore 构造需要 Hive box，先初始化。
+    final dir =
+        await Directory.systemTemp.createTemp('jxmusic_pl_list_test');
+    Hive.init(dir.path);
+    await Hive.openBox<Map>(JXConstants.hiveBoxHistory);
+    await Hive.openBox<Map>(JXConstants.hiveBoxPlaylists);
+  });
+
   testWidgets('全部歌单页：首屏渲染 page1，滑到底自动加载 page2 并追加', (tester) async {
     _usePhoneSurface(tester);
     final api = _FakePlaylistApi(pages: {

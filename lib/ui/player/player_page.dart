@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
@@ -10,6 +12,7 @@ import '../../services/download_service.dart';
 import '../../services/library_store.dart';
 import '../../services/playback.dart';
 import '../../services/player_service.dart';
+import '../cover.dart';
 import '../dialogs.dart';
 import '../glass.dart';
 import '../layout.dart';
@@ -25,6 +28,17 @@ class PlayerPage extends ConsumerStatefulWidget {
 
 class _PlayerPageState extends ConsumerState<PlayerPage> {
   bool _showLyrics = false;
+
+  /// 拖动进度条时的临时值（0-1000）：拖动中显示它，松手才真正 seek，
+  /// 避免每个拖动 tick 都 seek 与 position 流互相拉扯。
+  double? _dragProgress;
+
+  /// 应用内音量条仅桌面（Windows/macOS/Linux）保留；
+  /// 手机端（Android/ohos/iOS）音量由系统音量键接管。
+  bool get _showVolumeSlider =>
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.macOS ||
+      defaultTargetPlatform == TargetPlatform.linux;
 
   String _fmt(Duration d) {
     final m = d.inMinutes.toString().padLeft(2, '0');
@@ -51,286 +65,340 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: isDark
-                ? [const Color(0xFF151B29), const Color(0xFF0B0E16)]
-                : [const Color(0xFFE9EFF9), const Color(0xFFDDE6F4)],
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // 渐变底色：无封面/封面加载前/加载失败的完整背景
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: isDark
+                    ? [const Color(0xFF151B29), const Color(0xFF0B0E16)]
+                    : [const Color(0xFFE9EFF9), const Color(0xFFDDE6F4)],
+              ),
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              // 顶部栏
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                child: Row(
-                  children: [
-                    GlassIconButton(
-                      icon: Icons.keyboard_arrow_down_rounded,
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                    const Expanded(
-                      child: Column(
-                        children: [
-                          Text(
+          // 沉浸式封面背景：有封面时模糊放大铺满，切歌交叉淡化
+          if (song.coverUrl.trim().isNotEmpty) ...[
+            Positioned.fill(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 700),
+                child: _BackdropArt(
+                  key: ValueKey(song.coverUrl),
+                  url: song.coverUrl,
+                ),
+              ),
+            ),
+            // 压暗渐变：保证前景文字与玻璃控件可读
+            const Positioned.fill(
+              child: IgnorePointer(child: _BackdropScrim()),
+            ),
+          ],
+          SafeArea(
+            child: Column(
+              children: [
+                // 顶部栏
+                Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      GlassIconButton(
+                        icon: Icons.keyboard_arrow_down_rounded,
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                      const Expanded(
+                        child: Center(
+                          child: Text(
                             '正在播放',
                             style: TextStyle(
-                                fontSize: 13, fontWeight: FontWeight.w600),
-                          ),
-                          SizedBox(height: 2),
-                          Text(
-                            JXConstants.appName,
-                            style: TextStyle(
-                                fontSize: 11,
-                                color: Colors.grey,
-                                fontWeight: FontWeight.w400),
-                          ),
-                        ],
-                      ),
-                    ),
-                    GlassIconButton(
-                      icon: Icons.more_horiz_rounded,
-                      size: 36,
-                      onPressed: _showMoreSheet,
-                    ),
-                  ],
-                ),
-              ),
-
-              // 主体
-              Expanded(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: _showLyrics
-                      ? _LyricsView(
-                          key: const ValueKey('lyrics'),
-                          lyrics: player.lyrics,
-                          status: player.lyricsStatus,
-                          currentIndex: player.lyricIndex,
-                          onRetry: player.retryLyrics,
-                          textColor: textColor,
-                          textSub: textSub,
-                        )
-                      : _AlbumArtView(
-                          key: const ValueKey('art'),
-                          song: song,
-                          spinning: player.playing,
-                          textColor: textColor,
-                          textSub: textSub,
-                        ),
-                ),
-              ),
-
-              // 控制区
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
-                child: Column(
-                  children: [
-                    // 音源切换二级按钮：仅同一首歌存在多个平台音源时显示，
-                    // 点击弹出「选择音源」面板（替代原先标题下方的横向音源条）。
-                    if (player.currentSources.length > 1)
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Padding(
-                          padding: const EdgeInsets.only(bottom: 2),
-                          child: _SourceSwitchButton(
-                            onTap: _showSourceSheet,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              letterSpacing: 2,
+                            ),
                           ),
                         ),
                       ),
-                    // 进度条
-                    Row(
-                      children: [
-                        Text(_fmt(player.position),
-                            style: TextStyle(fontSize: 11, color: textSub)),
-                        Expanded(
-                          child: Slider(
-                            value: (progress * 1000).clamp(0, 1000),
-                            max: 1000,
-                            activeColor: JXColors.primary,
-                            inactiveColor: Colors.grey.withValues(alpha: 0.2),
-                            onChanged: (v) async {
-                              if (player.duration.inMilliseconds > 0) {
-                                await player.seek(Duration(
-                                    milliseconds:
-                                        (v / 1000 * player.duration.inMilliseconds)
+                      GlassIconButton(
+                        icon: Icons.more_horiz_rounded,
+                        size: 36,
+                        onPressed: _showMoreSheet,
+                      ),
+                    ],
+                  ),
+                ),
+
+                // 主体
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    child: _showLyrics
+                        ? _LyricsView(
+                            key: const ValueKey('lyrics'),
+                            lyrics: player.lyrics,
+                            status: player.lyricsStatus,
+                            currentIndex: player.lyricIndex,
+                            onRetry: player.retryLyrics,
+                            textColor: textColor,
+                            textSub: textSub,
+                          )
+                        : _AlbumArtView(
+                            key: const ValueKey('art'),
+                            song: song,
+                            spinning: player.playing,
+                            textColor: textColor,
+                            textSub: textSub,
+                          ),
+                  ),
+                ),
+
+                // 控制区
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 8, 24, 20),
+                  child: Column(
+                    children: [
+                      // 音源切换二级按钮：仅同一首歌存在多个平台音源时显示，
+                      // 点击弹出「选择音源」面板（替代原先标题下方的横向音源条）。
+                      if (player.currentSources.length > 1)
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: _SourceSwitchButton(
+                              onTap: _showSourceSheet,
+                            ),
+                          ),
+                        ),
+                      // 进度条
+                      Row(
+                        children: [
+                          Text(_fmt(player.position),
+                              style: TextStyle(fontSize: 11, color: textSub)),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderThemeData(
+                                trackHeight: 3.5,
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 6),
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 14),
+                              ),
+                              child: Slider(
+                                value: _dragProgress ??
+                                    (progress * 1000).clamp(0.0, 1000.0),
+                                max: 1000,
+                                activeColor: JXColors.primary,
+                                inactiveColor:
+                                    Colors.grey.withValues(alpha: 0.2),
+                                onChanged: (v) {
+                                  // 只记录拖动值，不逐 tick seek
+                                  setState(() => _dragProgress = v);
+                                },
+                                onChangeEnd: (v) async {
+                                  setState(() => _dragProgress = null);
+                                  if (player.duration.inMilliseconds > 0) {
+                                    await player.seek(Duration(
+                                        milliseconds: (v /
+                                                1000 *
+                                                player
+                                                    .duration.inMilliseconds)
                                             .round()));
-                              }
-                            },
-                          ),
-                        ),
-                        Text(_fmt(player.duration),
-                            style: TextStyle(fontSize: 11, color: textSub)),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    // 控制按钮：左右两侧等宽均分，保证主播放键始终水平居中、各按钮垂直居中对齐
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Center(
-                            child: GlassIconButton(
-                              icon: player.loopMode == 3
-                                  ? Icons.shuffle_rounded
-                                  : player.loopMode == 1
-                                      ? Icons.repeat_one_rounded
-                                      : Icons.repeat_rounded,
-                              size: 40,
-                              color: player.loopMode != 2
-                                  ? JXColors.primary
-                                  : null,
-                              onPressed: () => _cycleLoop(player),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Center(
-                            child: GlassIconButton(
-                              icon: Icons.skip_previous_rounded,
-                              size: 46,
-                              onPressed: () => player.previous(),
-                            ),
-                          ),
-                        ),
-                        // 主播放键（固定宽度，居中）
-                        SizedBox(
-                          width: 84,
-                          child: Center(
-                            child: GestureDetector(
-                              onTap: () => player.toggle(),
-                              child: Container(
-                                width: 72,
-                                height: 72,
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      JXColors.primary,
-                                      JXColors.accent
-                                    ],
-                                  ),
-                                  shape: BoxShape.circle,
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: JXColors.primary
-                                          .withValues(alpha: 0.45),
-                                      blurRadius: 24,
-                                      offset: const Offset(0, 8),
-                                    ),
-                                  ],
-                                ),
-                                child: Icon(
-                                  player.playing
-                                      ? Icons.pause_rounded
-                                      : Icons.play_arrow_rounded,
-                                  color: Colors.white,
-                                  size: 42,
-                                ),
+                                  }
+                                },
                               ),
                             ),
                           ),
-                        ),
-                        Expanded(
-                          child: Center(
-                            child: GlassIconButton(
-                              icon: Icons.skip_next_rounded,
-                              size: 46,
-                              onPressed: () => player.next(),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: Center(
-                            child: GlassIconButton(
-                              icon: _showLyrics
-                                  ? Icons.album_rounded
-                                  : Icons.lyrics_rounded,
-                              size: 40,
-                              color: _showLyrics ? JXColors.primary : null,
-                              onPressed: () {
-                                setState(() => _showLyrics = !_showLyrics);
-                              },
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    // 音量 + 倍速（图标定宽居中，滑块与倍速按钮垂直对齐）
-                    SizedBox(
-                      height: 32,
-                      child: Row(
+                          Text(_fmt(player.duration),
+                              style: TextStyle(fontSize: 11, color: textSub)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      // 控制按钮：左右两侧等宽均分，保证主播放键始终水平居中、各按钮垂直居中对齐
+                      Row(
                         children: [
-                          SizedBox(
-                            width: 24,
-                            child: GestureDetector(
-                              onTap: player.toggleMute,
-                              behavior: HitTestBehavior.opaque,
-                              child: Icon(
-                                player.muted
-                                    ? Icons.volume_off_rounded
-                                    : Icons.volume_down_rounded,
-                                size: 18,
-                                color: player.muted
-                                    ? JXColors.accentPink
-                                    : textSub,
+                          Expanded(
+                            child: Center(
+                              child: GlassIconButton(
+                                icon: player.loopMode == 3
+                                    ? Icons.shuffle_rounded
+                                    : player.loopMode == 1
+                                        ? Icons.repeat_one_rounded
+                                        : Icons.repeat_rounded,
+                                size: 40,
+                                color: player.loopMode != 2
+                                    ? JXColors.primary
+                                    : null,
+                                onPressed: () => _cycleLoop(player),
                               ),
                             ),
                           ),
                           Expanded(
-                            child: SliderTheme(
-                              data: SliderThemeData(
-                                trackHeight: 3,
-                                thumbShape: const RoundSliderThumbShape(
-                                    enabledThumbRadius: 6),
-                                overlayShape: const RoundSliderOverlayShape(
-                                    overlayRadius: 13),
-                              ),
-                              child: Slider(
-                                value: player.muted ? 0 : player.volume,
-                                max: 100,
-                                activeColor: JXColors.primary,
-                                inactiveColor:
-                                    Colors.grey.withValues(alpha: 0.2),
-                                onChanged: (v) => player.setVolume(v),
+                            child: Center(
+                              child: GlassIconButton(
+                                icon: Icons.skip_previous_rounded,
+                                size: 46,
+                                onPressed: () => player.previous(),
                               ),
                             ),
                           ),
+                          // 主播放键（固定宽度，居中）
                           SizedBox(
-                            width: 24,
-                            child: GestureDetector(
-                              onTap: player.toggleMute,
-                              behavior: HitTestBehavior.opaque,
-                              child: Icon(
-                                player.muted
-                                    ? Icons.volume_off_rounded
-                                    : Icons.volume_up_rounded,
-                                size: 18,
-                                color: player.muted
-                                    ? JXColors.accentPink
-                                    : textSub,
+                            width: 84,
+                            child: Center(
+                              child: GestureDetector(
+                                onTap: () => player.toggle(),
+                                child: Container(
+                                  width: 72,
+                                  height: 72,
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        JXColors.primary,
+                                        JXColors.accent
+                                      ],
+                                    ),
+                                    shape: BoxShape.circle,
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: JXColors.primary
+                                            .withValues(alpha: 0.45),
+                                        blurRadius: 24,
+                                        offset: const Offset(0, 8),
+                                      ),
+                                    ],
+                                  ),
+                                  // 播放/暂停图标缩放淡入切换（动画连贯）
+                                  child: AnimatedSwitcher(
+                                    duration:
+                                        const Duration(milliseconds: 180),
+                                    transitionBuilder: (child, animation) =>
+                                        ScaleTransition(
+                                      scale: animation,
+                                      child: FadeTransition(
+                                        opacity: animation,
+                                        child: child,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      player.playing
+                                          ? Icons.pause_rounded
+                                          : Icons.play_arrow_rounded,
+                                      key: ValueKey(player.playing),
+                                      color: Colors.white,
+                                      size: 42,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          _SpeedButton(
-                            speed: player.speed,
-                            onChanged: player.setSpeed,
+                          Expanded(
+                            child: Center(
+                              child: GlassIconButton(
+                                icon: Icons.skip_next_rounded,
+                                size: 46,
+                                onPressed: () => player.next(),
+                              ),
+                            ),
+                          ),
+                          Expanded(
+                            child: Center(
+                              child: GlassIconButton(
+                                icon: _showLyrics
+                                    ? Icons.album_rounded
+                                    : Icons.lyrics_rounded,
+                                size: 40,
+                                color: _showLyrics ? JXColors.primary : null,
+                                onPressed: () {
+                                  setState(
+                                      () => _showLyrics = !_showLyrics);
+                                },
+                              ),
+                            ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 14),
+                      // 音量 + 倍速：应用内音量条仅桌面保留，手机端音量由
+                      // 系统音量键接管（软件音量与系统一致，避免两套音量）。
+                      SizedBox(
+                        height: 32,
+                        child: Row(
+                          children: [
+                            if (_showVolumeSlider) ...[
+                              SizedBox(
+                                width: 24,
+                                child: GestureDetector(
+                                  onTap: player.toggleMute,
+                                  behavior: HitTestBehavior.opaque,
+                                  child: Icon(
+                                    player.muted
+                                        ? Icons.volume_off_rounded
+                                        : Icons.volume_down_rounded,
+                                    size: 18,
+                                    color: player.muted
+                                        ? JXColors.accentPink
+                                        : textSub,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: SliderTheme(
+                                  data: SliderThemeData(
+                                    trackHeight: 3,
+                                    thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 6),
+                                    overlayShape:
+                                        const RoundSliderOverlayShape(
+                                            overlayRadius: 13),
+                                  ),
+                                  child: Slider(
+                                    value: player.muted ? 0 : player.volume,
+                                    max: 100,
+                                    activeColor: JXColors.primary,
+                                    inactiveColor:
+                                        Colors.grey.withValues(alpha: 0.2),
+                                    onChanged: (v) => player.setVolume(v),
+                                  ),
+                                ),
+                              ),
+                              SizedBox(
+                                width: 24,
+                                child: GestureDetector(
+                                  onTap: player.toggleMute,
+                                  behavior: HitTestBehavior.opaque,
+                                  child: Icon(
+                                    player.muted
+                                        ? Icons.volume_off_rounded
+                                        : Icons.volume_up_rounded,
+                                    size: 18,
+                                    color: player.muted
+                                        ? JXColors.accentPink
+                                        : textSub,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ] else
+                              const Spacer(),
+                            _SpeedButton(
+                              speed: player.speed,
+                              onChanged: player.setSpeed,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -459,6 +527,70 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
   void _cycleLoop(PlayerService player) {
     final next = (player.loopMode + 1) % 4;
     player.setLoopMode(next);
+  }
+}
+
+/// 沉浸式封面背景：模糊放大铺满全屏（切歌时由外层 AnimatedSwitcher 交叉淡化）。
+///
+/// - 复用 [JXCoverImage]：网络/本地路径、UA/Referer、网易云 URL 变体重试全部一致；
+/// - `cacheWidth` 收到 180：背景只需要模糊色块，小尺寸解码省内存；
+/// - `Transform.scale(1.25)` 放大出血，避免 blur 把边缘淡出到透明形成暗角；
+/// - 加载中/失败回落透明（SizedBox.expand）→ 露出底层渐变。
+class _BackdropArt extends StatelessWidget {
+  final String url;
+
+  const _BackdropArt({super.key, required this.url});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.expand(
+      key: const Key('playerBackdropArt'),
+      child: ClipRect(
+        child: Transform.scale(
+          scale: 1.25,
+          child: ImageFiltered(
+            imageFilter: ImageFilter.blur(
+              sigmaX: 56,
+              sigmaY: 56,
+              tileMode: TileMode.clamp,
+            ),
+            child: JXCoverImage(
+              src: url,
+              cacheWidth: 180,
+              fallback: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 封面背景上的压暗/提亮渐变：保证前景文字与玻璃控件可读。
+class _BackdropScrim extends StatelessWidget {
+  const _BackdropScrim();
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return DecoratedBox(
+      key: const Key('playerBackdropScrim'),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: isDark
+              ? [
+                  Colors.black.withValues(alpha: 0.30),
+                  Colors.black.withValues(alpha: 0.62),
+                ]
+              : [
+                  Colors.white.withValues(alpha: 0.18),
+                  Colors.white.withValues(alpha: 0.52),
+                ],
+        ),
+      ),
+    );
   }
 }
 

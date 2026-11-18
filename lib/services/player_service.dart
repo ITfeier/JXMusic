@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
 import '../models/lyric.dart';
+import 'audio_effect.dart';
 
 /// 歌词加载状态（播放页三态渲染 + 重试用，PRD R1.3 契约：签名不得改）。
 ///
@@ -50,11 +51,15 @@ class PlayerService extends ChangeNotifier {
     double initialVolume = 80,
     int initialLoopMode = 2,
     double initialSpeed = 1.0,
+    String initialAudioEffect = JXAudioEffects.noneId,
     bool initPlayer = true,
   }) {
     _volume = initialVolume;
     _loopMode = initialLoopMode;
     _speed = initialSpeed;
+    _audioEffect = JXAudioEffects.isValid(initialAudioEffect)
+        ? initialAudioEffect
+        : JXAudioEffects.noneId;
     if (initPlayer) _init();
   }
 
@@ -123,8 +128,13 @@ class PlayerService extends ChangeNotifier {
 
   // 播放速度
   double _speed = 1.0;
+
   double get speed => _speed;
 
+  /// 当前音效预设 id（audio_effect.dart 目录；默认原声）。
+  String _audioEffect = JXAudioEffects.noneId;
+
+  String get audioEffect => _audioEffect;
   // 歌词
   List<LyricLine> _lyrics = [];
   List<LyricLine> get lyrics => _lyrics;
@@ -146,17 +156,38 @@ class PlayerService extends ChangeNotifier {
   /// dispose 之后异步回调不得 notifyListeners（否则 debug 下断言失败）。
   bool _disposed = false;
 
+  /// 播放代际号：每次发起新的播放流程自增；`_playAt` 里跨 await 的每一步
+  /// 都要校验它没变，防止快速切歌/清空队列时旧的异步流程回来写脏数据
+  /// （旧直链覆盖新队列项、旧曲目 open 迟到覆盖新曲目、RangeError）。
+  int _playGeneration = 0;
+
+  /// 已因播放器报错而自动重试过一次的歌曲（globalId）：
+  /// 每首歌只自动重解析一次，防止直链持续失效时无限重试循环。
+  String? _retriedSongId;
+
+  /// 最近一次尝试播放的歌曲（globalId），用于判断「换歌」以重置重试标记。
+  String? _lastPlayedSongId;
+
+  /// 音量持久化防抖：拖动音量条每个 tick 都 setVolume，
+  /// Hive 写入按 500ms 合并，避免 I/O 风暴。
+  Timer? _volumePersistTimer;
+
   StreamSubscription? _posSub;
   StreamSubscription? _durSub;
   StreamSubscription? _playSub;
   StreamSubscription? _completeSub;
   StreamSubscription? _playlistSub;
+  StreamSubscription? _errSub;
 
   Future<void> _init() async {
     _player = Player();
     _player?.setVolume(_volume);
     if (_speed != 1.0) {
       _player?.setRate(_speed);
+    }
+    // 音效预设恢复（非原声才需要下发 mpv af）
+    if (_audioEffect != JXAudioEffects.noneId) {
+      await _applyAudioEffect();
     }
 
     _posSub = _player?.stream.position.listen((p) {
@@ -175,6 +206,34 @@ class PlayerService extends ChangeNotifier {
     _completeSub = _player?.stream.completed.listen((_) {
       _onTrackComplete();
     });
+    // mpv 打开失败（如 CDN 直链过期）不会让 open() 抛异常，只走 error 流：
+    // 监听错误事件，对在线曲目自动清掉过期直链并重新解析一次。
+    _errSub = _player?.stream.error.listen((error) {
+      _onPlayerError(error);
+    });
+  }
+
+  /// 播放器报错：在线歌曲的直链可能已过期（历史/收藏里存的是解析时的 CDN
+  /// 链接，几分钟到几小时就失效）。清掉队列项里的旧直链并重解析重开一次；
+  /// 每首歌只重试一次，本地曲目不自动重试（解密失败重试结果相同）。
+  Future<void> _onPlayerError(String error) async {
+    debugPrint('[JXMusic] 播放器错误: $error');
+    if (_disposed) return;
+    final song = currentSong;
+    if (song == null) return;
+    if (song.platform == JXPlatform.local) return;
+    if (_retriedSongId == song.globalId) return;
+    _retriedSongId = song.globalId;
+    final index = _currentIndex;
+    if (index >= 0 && index < _queue.length &&
+        _queue[index].globalId == song.globalId) {
+      // copyWith 无法把字段置 null，经 toJson/fromJson 重建以清掉过期直链
+      final cleared = Song.fromJson(song.toJson()
+        ..['audioUrl'] = null);
+      _queue[index] = cleared;
+    }
+    await _playAt(index);
+    notifyListeners();
   }
 
   void _updateLyricIndex() {
@@ -250,7 +309,14 @@ class PlayerService extends ChangeNotifier {
     bool replaceCurrent = false,
   }) async {
     if (sources != null && sources.isNotEmpty) {
-      _sourcesBySong[song.globalId] = List<Song>.unmodifiable(sources);
+      final gid = song.globalId;
+      // LRU：重复播放时刷新插入顺序，超出 200 首淘汰最旧的音源记录，
+      // 长会话里聚合搜索结果每首带全量音源，不设上限会无限增长。
+      _sourcesBySong.remove(gid);
+      _sourcesBySong[gid] = List<Song>.unmodifiable(sources);
+      while (_sourcesBySong.length > 200) {
+        _sourcesBySong.remove(_sourcesBySong.keys.first);
+      }
     }
     if (replaceCurrent && _currentIndex >= 0 && _currentIndex < _queue.length) {
       // 先算好替换结果，再整体替换内部队列：级联 `..clear()..addAll(f(_queue))`
@@ -293,8 +359,15 @@ class PlayerService extends ChangeNotifier {
 
   Future<void> _playAt(int index) async {
     if (index < 0 || index >= _queue.length) return;
+    final generation = ++_playGeneration;
     _currentIndex = index;
     var song = _queue[index];
+    // 换歌才重置「错误自动重试」标记：同一首歌的错误重试路径不能重置它，
+    // 否则直链持续失效时会无限重试。
+    if (_lastPlayedSongId != song.globalId) {
+      _lastPlayedSongId = song.globalId;
+      _retriedSongId = null;
+    }
 
     // 歌词与音频解耦（PRD R1.3）：切歌即清空旧歌词 → loading → 立即异步请求。
     // 不依赖 _player.open 成功：无直链 / 本地解密失败时歌词仍应能展示。
@@ -308,6 +381,8 @@ class PlayerService extends ChangeNotifier {
     if (song.platform == JXPlatform.local) {
       try {
         final resolved = await urlResolver?.call(song);
+        // 期间可能已切歌/清空队列：旧流程不得继续打开播放器
+        if (generation != _playGeneration) return;
         // resolver 返回 null 表示解密/解析失败，绝不能回退到密文源路径。
         playUrl = (resolved == null || resolved.isEmpty) ? null : resolved;
       } catch (e) {
@@ -331,11 +406,16 @@ class PlayerService extends ChangeNotifier {
         debugPrint('[JXMusic] 直链解析失败: $e');
         playUrl = null;
       }
+      if (generation != _playGeneration) return;
       if (playUrl != null && playUrl.isNotEmpty) {
         song = song.copyWith(audioUrl: playUrl);
-        _queue[index] = song;
+        if (index < _queue.length &&
+            _queue[index].globalId == song.globalId) {
+          _queue[index] = song;
+        }
       }
     }
+    if (generation != _playGeneration) return;
     if (playUrl == null || playUrl.isEmpty) {
       debugPrint('[JXMusic] 歌曲无可播放链接: ${song.title}');
       notifyListeners();
@@ -353,6 +433,7 @@ class PlayerService extends ChangeNotifier {
         headers = {'Referer': 'https://m.kugou.com/'};
       }
       await _player?.open(Media(playUrl, httpHeaders: headers), play: true);
+      if (generation != _playGeneration) return;
       onSongStarted?.call(song);
     } catch (e) {
       debugPrint('[JXMusic] 播放失败: $e');
@@ -461,6 +542,11 @@ class PlayerService extends ChangeNotifier {
       await seek(Duration.zero);
       return;
     }
+    // 随机模式下上一首同样随机（与 next() 的行为保持一致）
+    if (_loopMode == 3) {
+      await _playAt(_randomIndex());
+      return;
+    }
     final prev = _currentIndex - 1;
     if (prev >= 0) {
       await _playAt(prev);
@@ -482,7 +568,13 @@ class PlayerService extends ChangeNotifier {
       _volumeBeforeMute = _volume;
     }
     await _player?.setVolume(_muted ? 0 : _volume);
-    onSettingChanged?.call('volume', _volume);
+    // 拖动音量条每个 tick 都会调到这里：持久化按 500ms 防抖合并，
+    // 避免一次拖动手势写几十次 Hive。
+    _volumePersistTimer?.cancel();
+    _volumePersistTimer = Timer(const Duration(milliseconds: 500), () {
+      if (_disposed) return;
+      onSettingChanged?.call('volume', _volume);
+    });
     notifyListeners();
   }
 
@@ -507,6 +599,32 @@ class PlayerService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 切换音效预设（mpv `af` 滤镜链，见 audio_effect.dart）。
+  /// 未知 id 忽略；重复设置同一预设直接跳过。
+  Future<void> setAudioEffect(String id) async {
+    if (!JXAudioEffects.isValid(id)) return;
+    if (_audioEffect == id) return;
+    _audioEffect = id;
+    await _applyAudioEffect();
+    onSettingChanged?.call('audioEffect', id);
+    notifyListeners();
+  }
+
+  /// 把当前音效预设下发到 mpv（NativePlayer.setProperty "af"）。
+  /// 原声 = 空滤镜链；播放器未创建（测试 initPlayer:false）或已释放时静默跳过。
+  Future<void> _applyAudioEffect() async {
+    final player = _player;
+    if (player == null || _disposed) return;
+    try {
+      final platform = player.platform;
+      if (platform is NativePlayer) {
+        await platform.setProperty('af', JXAudioEffects.afFor(_audioEffect));
+      }
+    } catch (e) {
+      debugPrint('[JXMusic] 音效下发失败: $e');
+    }
+  }
+
   /// 注入歌词（兼容既有调用与测试）：同步置 ready/empty。
   void setLyrics(List<LyricLine> lines) {
     _lyrics = lines;
@@ -519,22 +637,46 @@ class PlayerService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 移除队列中某歌曲
+  /// 移除队列中某歌曲。
+  ///
+  /// 移除的是当前播放曲目时：若后面还有歌则接着播放顶上来的那首，
+  /// 否则停止播放（不能让已移除的歌继续响、UI 却指向别的歌）。
   void removeFromQueue(int index) {
     if (index < 0 || index >= _queue.length) return;
+    final wasCurrent = index == _currentIndex;
     _queue.removeAt(index);
-    if (index < _currentIndex) _currentIndex--;
+    if (index < _currentIndex) {
+      _currentIndex--;
+    } else if (wasCurrent) {
+      // 作废被移除曲目可能仍在途的解析/open 流程
+      _playGeneration++;
+      if (_currentIndex < _queue.length) {
+        unawaited(_playAt(_currentIndex));
+      } else {
+        _stopPlayback();
+      }
+    }
     notifyListeners();
   }
 
-  void clearQueue() {
-    _queue.clear();
+  /// 停止播放并复位状态（清空队列/移除最后一首在播曲目时用）。
+  void _stopPlayback() {
+    unawaited(_player?.stop());
+    _playing = false;
+    _position = Duration.zero;
+    _duration = Duration.zero;
     _currentIndex = -1;
     _lyrics = const [];
     _lyricIndex = -1;
     _lyricsSongId = null;
-    _lyricsRequestId++; // 作废在途歌词响应
+    _lyricsRequestId++;
     _lyricsStatus = LyricsStatus.idle;
+  }
+
+  void clearQueue() {
+    _playGeneration++;
+    _queue.clear();
+    _stopPlayback();
     notifyListeners();
   }
 
@@ -542,11 +684,13 @@ class PlayerService extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _lyricsRequestId++; // 在途歌词响应不再 notify
+    _volumePersistTimer?.cancel();
     _posSub?.cancel();
     _durSub?.cancel();
     _playSub?.cancel();
     _completeSub?.cancel();
     _playlistSub?.cancel();
+    _errSub?.cancel();
     _player?.dispose();
     super.dispose();
   }

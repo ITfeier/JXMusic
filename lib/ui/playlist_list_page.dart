@@ -22,7 +22,10 @@ import 'playlist_row.dart';
 class PlaylistListPage extends ConsumerStatefulWidget {
   final int platform;
 
-  const PlaylistListPage({super.key, required this.platform});
+  /// 内嵌在 [PlaylistHubPage] 里时隐藏返回按钮（由外层页面统一返回）。
+  final bool showBack;
+
+  const PlaylistListPage({super.key, required this.platform, this.showBack = true});
 
   @override
   ConsumerState<PlaylistListPage> createState() => _PlaylistListPageState();
@@ -251,11 +254,13 @@ class _PlaylistListPageState extends ConsumerState<PlaylistListPage> {
       padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
       child: Row(
         children: [
-          GlassIconButton(
-            icon: Icons.arrow_back_rounded,
-            onPressed: () => Navigator.of(context).pop(),
-          ),
-          const SizedBox(width: 8),
+          if (widget.showBack) ...[
+            GlassIconButton(
+              icon: Icons.arrow_back_rounded,
+              onPressed: () => Navigator.of(context).pop(),
+            ),
+            const SizedBox(width: 8),
+          ],
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

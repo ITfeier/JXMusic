@@ -458,6 +458,8 @@ class LocalMusicService {
       final file = File(p.join(dir.path, '$digest.${isPng ? 'png' : 'jpg'}'));
       if (!file.existsSync()) {
         await file.writeAsBytes(bytes, flush: false);
+        // 大曲库扫描时封面可能很多：与解密标签封面共用同一数量上限。
+        await LocalFormatService.enforceCoverCacheLimit(dir);
       }
       return file.path;
     } catch (e) {

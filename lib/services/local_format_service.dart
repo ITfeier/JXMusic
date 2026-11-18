@@ -53,6 +53,9 @@ class LocalFormatService {
   /// 封面缓存目录名（临时目录下，和既有封面缓存复用）。
   static const String coverDirName = 'jxmusic_covers';
 
+  /// 封面缓存文件数上限：封面可随时从源文件重新提取，超限按 mtime 淘汰最旧的。
+  static const int maxCoverCacheFiles = 400;
+
   final List<EncryptedAudioDecoder> _decoders;
 
   /// 缓存根目录来源（默认 `getApplicationSupportDirectory()/decrypted_audio`）。
@@ -71,7 +74,11 @@ class LocalFormatService {
   final int maxCacheFiles;
 
   /// 最近一次 [playableUrl] 失败的中文原因（成功/普通格式时清空）。
+  ///
+  /// 并发解析时按 [_lastErrorSongId] 归属：只有「同一首歌」成功时才清空，
+  /// 避免歌 A 的失败原因被歌 B 的成功抹掉（竞态收窄）。
   String? lastError;
+  String? _lastErrorSongId;
 
   /// 同 key 正在解密的 Future（并发合并，避免同一首歌重复解密）。
   final Map<String, Future<File>> _pending = <String, Future<File>>{};
@@ -128,6 +135,9 @@ class LocalFormatService {
   }
 
   /// 把封面字节落到临时目录 `jxmusic_covers`（md5 命名），返回文件路径。
+  ///
+  /// 新写入文件后执行数量淘汰（[maxCoverCacheFiles]），防止大曲库扫描时
+  /// 封面缓存无限增长（封面可随时从源文件重新提取，淘汰无损失）。
   Future<String?> saveCoverBytes(Uint8List bytes) async {
     if (bytes.isEmpty) return null;
     try {
@@ -137,11 +147,46 @@ class LocalFormatService {
       final file = File(p.join(dir.path, '$digest.${_imageExtension(bytes)}'));
       if (!await file.exists()) {
         await file.writeAsBytes(bytes, flush: false);
+        await enforceCoverCacheLimit(dir);
       }
       return file.path;
     } catch (e) {
       debugPrint('[JXMusic] 保存加密封面失败: $e');
       return null;
+    }
+  }
+
+  /// 封面缓存数量淘汰：超过 [maxFiles] 按 mtime 删最旧的。
+  ///
+  /// 公开静态：`jxmusic_covers` 同时被本地扫描（local_music）与解密标签
+  /// （saveCoverBytes）写入，两处共用同一套上限。
+  static Future<void> enforceCoverCacheLimit(
+    Directory dir, {
+    int maxFiles = maxCoverCacheFiles,
+  }) async {
+    try {
+      final files = <File>[];
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is File) files.add(entity);
+      }
+      if (files.length <= maxFiles) return;
+      final stated = <({File file, DateTime modified})>[];
+      for (final file in files) {
+        try {
+          stated.add((file: file, modified: (await file.stat()).modified));
+        } catch (_) {}
+      }
+      stated.sort((a, b) => a.modified.compareTo(b.modified));
+      var excess = files.length - maxFiles;
+      for (final entry in stated) {
+        if (excess <= 0) break;
+        try {
+          if (await entry.file.exists()) await entry.file.delete();
+          excess--;
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[JXMusic] 淘汰封面缓存失败: $e');
     }
   }
 
@@ -209,25 +254,40 @@ class LocalFormatService {
   ///
   /// 失败返回 null 并写入 [lastError]（中文原因），调用方不得把密文路径交给播放器。
   Future<String?> playableUrl(Song song) async {
-    lastError = null;
+    // 注意：不要在入口清空 lastError——并发解析另一首歌时会把上一首的
+    // 失败原因抹掉；失败写入、同曲成功清空，见 _clearErrorIfSame。
     final rawPath = song.audioUrl;
     if (rawPath == null || rawPath.trim().isEmpty) {
       lastError = '本地文件路径缺失，无法解密播放';
+      _lastErrorSongId = song.globalId;
       return null;
     }
     final path = rawPath.trim();
-    if (!isEncryptedPath(path)) return path;
+    if (!isEncryptedPath(path)) {
+      _clearErrorIfSame(song);
+      return path;
+    }
     try {
       final file = await ensureDecrypted(song);
+      _clearErrorIfSame(song);
       return file.path;
     } on FormatDecodeException catch (e) {
       lastError = e.message;
+      _lastErrorSongId = song.globalId;
       debugPrint('[JXMusic] 解密失败（${song.title}）：${e.message}');
       return null;
     } catch (e) {
       lastError = '解密失败：$e';
+      _lastErrorSongId = song.globalId;
       debugPrint('[JXMusic] 解密异常（${song.title}）：$e');
       return null;
+    }
+  }
+
+  void _clearErrorIfSame(Song song) {
+    if (_lastErrorSongId == song.globalId) {
+      lastError = null;
+      _lastErrorSongId = null;
     }
   }
 

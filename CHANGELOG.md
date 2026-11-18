@@ -1,5 +1,145 @@
 # CHANGELOG
 
+## 0.11.0+27 — 2026-11-18
+
+### 修复（网易云/酷狗登录账号歌单拉取：两处接口 bug + 错误态透明化）
+
+真机诊断（新增 `tool/probe_playlists.dart`：读设备沙盒 `jx_accounts.hive` 的真实登录态，`dart run -DJX_PROBE=true` 离线复现三平台 userPlaylists 并打印原始响应）定位：
+- **网易云「0 个歌单」是两个接口 bug，会话其实一直有效**：① 拿 uid 的端点写错——`/api/user/account` 返回 404「接口未找到」，正确老接口为 `/api/nuser/account/get`；② `/api/user/playlist` 老接口的响应字段是单数 **`playlist`**（`{"more":false,"playlist":[…],"code":200}`），代码读的是 `playlists` → 永远解析出空列表。修复后真机网易云 4 个歌单正常加载（喜欢的音乐/山有木兮…）。
+- **酷狗「0 个歌单」是 token 真失效**：`/v7/get_all_list` 网关返回 `{"status":0,"error_code":20017}`，此前被 catch 静默吞掉、UI 误导性显示「0 个歌单」；现在如实显示「登录已过期，请重新登录」并引导重登。
+- QQ 正常（4 个歌单），未受影响。
+
+### 改动明细
+
+- **`lib/services/api/netease_api.dart`**：`userPlaylists` 端点修正为 `/api/nuser/account/get`；歌单列表解析兼容 `playlist`/`playlists` 两种字段名；带 MUSIC_U 但 `profile` 为 null 时抛 `SessionExpiredException('登录已过期，请重新登录')`（`on SessionExpiredException { rethrow; }` 不被兜底 catch 吞掉），作为真会话失效时的安全网；`-DJX_PROBE` 探针打印保留（编译期剔除，release 零开销）。
+- **`lib/services/api/kugou_api.dart`**：`userPlaylists` 在网关返回非零 `error_code`（20017 过期 / 20028 风控 / 其它）时抛对应 `SessionExpiredException`（琥珀 chip 提示重登），root 为 null 归为「网络错误或登录已过期」；同样 rethrow 不吞。
+- **`lib/services/api/music_api.dart`**：新增 `SessionExpiredException`（会话失效异常，携带面向用户的 message）与 `PlatformPlaylists`（单平台歌单拉取结果：`playlists` + `error`）；`userPlaylistsByPlatform()` 返回 `Map<int, PlatformPlaylists>`——会话失效平台带 error 描述，其它异常归为「拉取失败」，单平台失败不影响其它平台。
+- **`lib/ui/library_page.dart`**：`_platformErrors`（Set）标记会话失效平台；chip 错误态用琥珀警示色（区别于平台色与灰色「未登录」），文案展示真实原因（如「酷狗音乐 · 登录已过期，请重新登录」），点击跳设置页重登（Tooltip「去设置重新登录」）；空态「去设置登录」按钮条件扩展为「未登录 或 会话失效」。
+- 新增 `tool/probe_playlists.dart` 一次性诊断探针（不进 App 产物）。
+
+### 测试与验收
+
+- `test/user_playlists_test.dart`：`_FakePlatformApi` 新增 `sessionError`（抛 `SessionExpiredException` 模拟「已登录但平台拒绝会话」）；新增 hub 层用例（userPlaylistsByPlatform 会话失效平台带 error、不影响其它平台）与 UI 层用例（网易云/酷狗 chip 显示「登录已过期，请重新登录」、点击跳设置页 navIndex==4）。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **438 testDone / 0 failure / 0 error** 全绿（新基线 438）。
+- 真机装机自检（uitest dumpLayout）：收藏歌单 tab 实测「QQ音乐 · 4 个歌单」「网易云音乐 · 4 个歌单」「酷狗音乐 · 登录已过期，请重新登录」，QQ/网易云歌单卡片正常渲染。
+
+## 0.11.0+26 — 2026-11-17
+
+### 新增（应用内收藏歌单）
+
+- **本机收藏歌单**（`lib/services/library_store.dart`）：playlistsBox 新增 `c:` 前缀条目——`collectedPlaylists`（getter）、`isCollected(playlist)`（同平台同 id 判重）、`toggleCollectedPlaylist(playlist)`（收藏 insert(0) + Hive 持久化 / 取消删除，返回切换后状态）；重载时按 addedAt 降序恢复。同平台同 id 视为同一歌单。
+- **歌单详情收藏按钮**（`lib/ui/playlist_detail_page.dart`）：详情页头部新增星标 IconButton（`star_border_rounded`/`star_rounded`，主色），点击切换本机收藏并以 SnackBar 提示「已收藏「xx」/已取消收藏」。
+- **收藏歌单 tab 改造**（`lib/ui/library_page.dart`）：
+  - 顶部新增三平台状态 chip（`_PlatformStatusChip`）：未登录显示「平台 · 未登录」不拉取，已登录显示「平台 · N 个歌单」，拉取失败显示错误态——「为什么这个平台是空的」一眼可见；
+  - `MusicApiHub.userPlaylistsByPlatform()`（`lib/services/api/music_api.dart`）返回 `Map<int, List<Playlist>>`，单平台失败不影响其它平台；
+  - 区块化渲染：「本机收藏 N」区块（store.collectedPlaylists）+「平台账号歌单」区块（平台歌单过滤掉已本机收藏的，去重）；两者皆空显示引导空态。
+
+### 修复（首页点歌只有单曲进队列）
+
+- `lib/ui/home_page.dart`：`_resolveAndPlay(Song song, {List<Song>? queue})` 增加 queue 参数——5 个调用点（桌面猜你喜欢、手机猜你喜欢、手机热歌榜、桌面热歌榜、_playTop）全部传所在列表整单：热歌榜 60 首三平台交错、猜你喜欢 picks、_playTop 用 `_tops[p]`；点任何列表歌曲，队列=所在列表全部歌曲。
+
+### 测试与验收
+
+- 新增 `test/home_queue_test.dart`：热歌榜点歌 60 首整单进队列 + 切行只换索引不换队列。
+- 新增/更新 `test/user_playlists_test.dart`：pumpLibrary 支持 `loggedIn` 平台集合（AccountNotifier override）；未登录/部分登录状态 chip 断言；「歌单详情收藏：本机收藏展示+平台去重+取消恢复」端到端。
+- 新增 `test/library_store_test.dart` 本机收藏歌单用例：收藏/取消/同平台同 id 去重/持久化/重载排序。
+- 补齐 `playlist_detail_page_test` / `playlist_list_page_test` / `search_modules_test` 的 Hive 初始化（详情页 watch libraryProvider 后需要 box）。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **436 testDone / 0 failure / 0 error** 全绿（新基线 436）。
+
+## 0.11.0+25 — 2026-11-17
+
+### 新增（ohos AVSession 系统媒体会话 + 后台播放长时任务）
+
+- **原生侧**（ohos/entry）：
+  - 新建 `ets/avsession/JxAvSessionManager.ets`：`createAVSession('audio')` + `activate()`（锁屏/播控中心/耳机线控可控）；注册 play/pause/playNext/playPrevious/seek 命令监听并经 `jxmusic/avsession` MethodChannel 转发给 Flutter；接收 Flutter 推送的 `updateMetadata`（标题/歌手/封面 URL/时长 → setAVMetadata，mediaImage 失败静默兜底）/`updatePlaybackState`（播放态/进度/时长/倍速 → setAVPlaybackState，进度含 updateTime）/`startBackground`/`stopBackground`（`backgroundTaskManager` AUDIO_PLAYBACK 长时任务 + wantAgent 通知回跳，幂等）；
+  - `EntryAbility.ets`：`configureFlutterEngine` 里 setup（Dart 启动前通道就绪），`onDestroy` 里 destroy（停任务/注销命令/销毁会话）；
+  - `module.json5`：EntryAbility 加 `backgroundModes: ["audioPlayback"]`；`requestPermissions` 加 `ohos.permission.KEEP_BACKGROUND_RUNNING`（reason/usedScene 三语齐全）。
+- **Flutter 侧**：
+  - 新建 `lib/services/avsession_service.dart`：监听 PlayerService——换歌推元数据、播放态变化即推、进度按 ~1s 节流推；首次播放申请后台长时任务、清空队列释放；接收系统命令转发回 PlayerService（seek 解析 positionMs）；通道异常一律静默降级，不影响播放本体；仅 ohos 生效（`supported`）；
+  - `app.dart`：`AvSessionService.supported` 时随播放器服务一起初始化。
+- **验收**：锁屏/控制中心应出现媒体卡片（标题/歌手/进度），退后台播放不被冻结；后续真机验证后台播放与 READ_MEDIA 授权。
+
+### 测试与验收
+
+- 新增 `test/avsession_service_test.dart` 8 项 4 组全绿：A 系统命令转发（含未知命令静默）/ B 元数据与后台任务推送（换歌只推一次、清队列释放）/ C 状态推送与 ~1s 进度节流 / D 初始化幂等 + supported 平台判定。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **425 testDone / 0 failure / 0 error** 全绿（新基线 425）；ArkTS 静态检查 0 错误；signed HAP 构建成功。
+
+## 0.11.0+24 — 2026-11-17
+
+### 改进（播放器 UI 改版：沉浸式封面背景，保红线契约）
+
+- **沉浸式封面背景**：播放页背景升级为「渐变底色 + 封面模糊放大铺满 + 压暗渐变」三层结构——有封面时全屏模糊封面（`_BackdropArt`：复用 `JXCoverImage` 的网络/本地/UA/网易云变体重试逻辑，`cacheWidth:180` 小尺寸解码省内存，`Transform.scale(1.25)` 出血避免 blur 边缘暗角），叠加深浅色各自的可读性渐变（`_BackdropScrim`）；切歌时封面背景 700ms 交叉淡化；封面加载中/失败回落纯渐变，空 coverUrl（列表占位/无封面歌曲）整层不渲染。key：`playerBackdropArt` / `playerBackdropScrim`。
+- **顶部栏精简**：两行「正在播放 + 应用名」精简为单行「正在播放」（letterSpacing 2），更简洁。
+- **进度条精致化**：进度 Slider 套 `SliderTheme`（trackHeight 3.5、小 thumb 6、overlay 14），拖动/seek 逻辑不变。
+- **播放/暂停图标动画**：主播放键图标用 `AnimatedSwitcher` 缩放淡入切换（180ms），动画连贯。
+- **红线契约全部保持**：`jxPlayerCoverSize/CoverGap/Compact` 纯函数与文案块预算未动；音源按钮（`sourceSwitchButton` 64~120dp 紧凑胶囊/右对齐/26dp 高）未动；黑胶唱片 `JXVinylDisc` 与歌词三态（loading/empty/error+重试、AnimatedSwitcher 300ms）未动；音量条平台化逻辑未动。
+
+### 测试与验收
+
+- 新增 `test/player_backdrop_test.dart` 3 项：有封面背景两层渲染且带 blur 滤镜、无封面两层都不渲染（退回纯渐变）、顶部栏单行且无应用名副标题。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **417 testDone / 0 failure / 0 error** 全绿（新基线 417）。
+
+## 0.11.0+23 — 2026-11-17
+
+### 新增（音效设置）
+
+- **播放器音效预设**：新增 `lib/services/audio_effect.dart` 预设目录（`JXAudioEffects`），6 档预设——原声 / 重低音（`lavfi=[bass=g=6]`）/ 人声（`lavfi=[equalizer=f=1200:t=q:w=1.4:g=5]`）/ 3D环绕（`extrastereo`）/ 演唱会（`lavfi=[aecho=0.8:0.9:60:0.35]`）/ 响度均衡（`lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]`）。
+- **实时下发 mpv 滤镜链**：`PlayerService.setAudioEffect(id)` 校验未知 id、重复设置跳过，经 `NativePlayer.setProperty('af', chain)` 整链替换（`''` 清空滤镜链恢复原声），播放中实时生效、不中断当前曲目；下发异常 try/catch 静默降级不影响播放。
+- **持久化与恢复**：预设 id 经 `onSettingChanged('audioEffect', id)` 落 Hive（`jx_settings`），启动时 `initialAudioEffect` 恢复（`_readSettingsString` 新增，非法/漂移存档兜底原声）。
+- **设置页「音效」区块**：外观与桌面之间新增独立 section，6 预设胶囊单选（复用外观胶囊视觉：选中主题色填充、未选中液态玻璃），底部一行说明文案；key `audioEffectPill_{id}`。
+
+### 测试与验收
+
+- 新增 `test/audio_effect_test.dart` 10 项：预设映射纯逻辑（afFor/labelFor/isValid、未知 id 兜底）、PlayerService 契约（非法初始值兜底、重复/非法设置不回调、切回原声）、设置页结构与交互（6 胶囊齐全、点击切换 bass→none）、持久化往返（onSettingChanged 落 Hive → initialAudioEffect 重启恢复，plain test 真实写 Hive）。
+- `test/theme_settings_test.dart`、`test/top_safe_area_test.dart` 补 `playerServiceProvider.overrideWith((ref) => PlayerService(initPlayer: false))`——设置页音效区开始 watch playerServiceProvider，pump 设置页的既有用例需隔离 media_kit。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **413 testDone / 0 failure / 0 error** 全绿（新基线 413）。
+
+## 0.11.0+22 — 2026-11-17
+
+### 改进（音量系统接管 + 主题自定义扩展）
+
+- **手机端移除应用内音量条**：播放页音量图标/滑块仅在桌面（Windows/macOS/Linux）保留，手机端（Android/ohos/iOS）音量由系统音量键接管；软件音量不再恢复历史应用内值、固定 100，避免「两套音量」叠加衰减。倍速按钮全平台保留（手机端右对齐）。
+- **外观模式三选一**：设置页「深色模式」开关升级为「跟随系统 / 浅色 / 深色」胶囊（`followSystemThemeProvider` 新增，`ThemeMode.system` 交给 MaterialApp 自动随系统切换；手动模式保留原 darkMode 值，关掉跟随时回到该值）。
+- **主题色扩展到 10 色**：色板由 5 色扩为 10 色（湖蓝/晴空/青碧/翠绿/琥珀/绯红/樱粉/紫罗兰/酷青/石墨，`JXThemePalette` 统一维护），Wrap 布局窄屏自动换行；仍作为 `buildJXTheme` 种子色动态生成整套配色。
+
+### 测试与验收
+
+- 新增 `test/player_volume_test.dart` 6 项（TargetPlatformVariant 驱动 android/ohos/iOS × 音量条隐藏 + windows/macOS/linux × 音量条保留）；注意 `_verifyInvariants` 在 tearDown 前校验 foundation debug 变量，平台覆写必须用 `variant:` 而非手动改 `debugDefaultTargetPlatformOverride`。
+- 新增 `test/theme_settings_test.dart` 2 项：外观结构（三胶囊 + 10 色板 360dp 窄屏齐全）、外观交互（浅色/跟随系统/深色切换与 darkMode/followSystemTheme/themeColor 持久化；写 Hive 用例最后声明）。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **403 testDone / 0 failure / 0 error** 全绿。
+
+## 0.11.0+21 — 2026-11-17
+
+### 新增（首页猜你喜欢 + 鸿蒙本地常用目录）
+
+- **首页「猜你喜欢」**：基于播放历史与收藏统计口味歌手（历史 1 分/次、收藏 2 分/首、同分按名字升序，取前 6），按口味歌手轮换 QQ/网易/酷狗搜索候选池（排除已听、globalId 去重、每歌手 size:15），Fisher-Yates 洗牌后按「日期种子 + 批次」取 9 首展示；同日同批刷新结果稳定，「换一批」批次 +1 不重新搜索；无播放历史时区块整体隐藏；推荐加载失败静默降级，不影响首页主内容。纯逻辑收敛在 `lib/services/guess_you_like.dart`（`dailySeed` / `splitArtists` / `tasteArtists` / `dailyShuffle` / `picks`）。
+- **鸿蒙本地音乐常用目录**：`LocalPathsStore` 默认候选新增 ohos 分支——用户公共目录 `/storage/Users/currentUser/{Music,Download}`、媒体库公共目录 `/storage/media/100/local/files/{Music,Download}`，不存在的自动过滤（沙盒场景退化为仅应用目录）；`isOhos` 可注入便于桌面单测。ohos `module.json5` 声明 `ohos.permission.READ_MEDIA`（reason + usedScene，三语言 string 资源），公共目录直读依赖该授权。
+
+### 测试与验收
+
+- 新增 `test/guess_you_like_test.dart` 8 项：纯逻辑 5 项（日期种子、歌手拆分、口味评分排序、洗牌不改原列表、picks 稳定去重）+ widget 3 项（排除已听+平台轮换搜索、换一批批次复算、无历史隐藏）。
+- 新增 `test/local_paths_test.dart` ohos 分支 2 项：候选目录存在性过滤、宿主平台判定。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **391 testDone / 0 failure / 0 error** 全绿；`flutter build hap --debug` 签名包构建成功。
+- 工具链修复：flutter_ohos 工具源码的插件 symlink junction 兜底补丁存在 `ProcessResult` 编译错误（快照未重建、补丁从未生效），修复后重建 `flutter_tools.snapshot`，Windows 无开发者模式也能正常构建。
+
+## 0.11.0+20 — 2026-11-17
+
+### 新增（音乐库：平台收藏歌单聚合 + 导入歌单）
+
+- **平台收藏歌单 tab**：音乐库新增「收藏歌单」页签，聚合展示当前登录账号在 QQ 音乐 / 网易云 / 酷狗创建和收藏的歌单（三平台并行拉取，轮询交错合并 A1,B1,C1,A2…），点卡片直接进歌单详情；每次切入自动重新拉取（登录态变更即时生效），右上角支持手动刷新；未登录任何平台时给出登录引导文案。
+- **三平台账号歌单接口**：
+  - 网易云：`/api/user/account`（Cookie MUSIC_U）取 uid → `/api/user/playlist` 列歌单
+  - QQ：musicu `PlaylistBaseRead.GetPlaylistByUin`（创建）+ `PlaylistFavRead.CgiGetPlaylistFavInfo`（收藏，euin 加密 best-effort），字段别名兼容（tid/dissid、dissname/title、picurl/logo）
+  - 酷狗：gateway `/v7/get_all_list`（android 签名 + x-router cloudlist），tolerant 多别名解析（specialid/specialname/img/count 等）
+- **导入歌单**：「歌单」页签新增「导入歌单」——粘贴网易云 / QQ / 酷狗歌单分享链接或纯数字歌单 ID（`parseJXPlaylistLink`：网易云 fragment 链接、QQ ryqq 路径、酷狗 specialid 全识别），拉取歌单全部歌曲后命名存为本地自建歌单；空歌单 / 无效链接给出失败提示。
+- **窄屏适配**：音乐库头部在窄屏（<380dp）下「导入歌单 / 新建歌单」文字按钮换图标按钮（Tooltip 保留语义），修复 360dp 级屏幕 RenderFlex 溢出 15px。
+
+### 测试与验收
+
+- 新增 `test/user_playlists_test.dart` 12 项：链接解析 6 项（fragment/m 页/ryqq/specialid/纯数字/垃圾输入）、Hub 轮询交错 2 项（不等长补位 + 全未登录）、音乐库页 4 项（五 tab 齐全 + 聚合交错 + 点卡片进详情、未登录引导、导入成功全链路、导入失败提示）。
+- 测试基建要点：testWidgets fake async 里发起的 Hive 磁盘写入其管线由 Timer/IO 事件驱动、测试结束后不再推进，Hive 写队列会卡住——之后任何 `await` 该 box（clear/close）都永不返回；因此**写入 Hive 的用例必须最后声明**，且 `tearDownAll` 不能 `await Hive.close()`。SnackBar 的 4s 超时计时器在入场动画完成后才创建，断言 toast 可见需先 pump 过入场动画再跳 4s，结束后用 `ScaffoldMessengerState.clearSnackBars/removeCurrentSnackBar` 确定性清队列。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **378 testDone / 0 failure / 0 error** 全绿。
+
 ## 0.10.0+19 — 2026-11-09
 
 ### 新增（本地音乐：自定义路径 + 三大平台加密格式 + 常用格式）

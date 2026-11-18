@@ -143,6 +143,58 @@ void main() {
     );
   });
 
+  test('默认候选（ohos 分支）：用户公共目录 + 媒体库目录，只保留存在的', () async {
+    final store = LocalPathsStore(
+      box: box,
+      isAndroid: false,
+      isOhos: true,
+      homePath: '',
+      externalStorageDirs: () async => const <String>[],
+      downloadsDirectory: () async => null,
+      directoryExists: (path) => !path.endsWith('Download'),
+    );
+
+    final candidates = await store.defaultCandidates();
+    String n(String path) => p.normalize(path);
+    expect(
+      candidates,
+      contains(n('/storage/Users/currentUser/Music')),
+      reason: 'ohos 用户公共音乐目录（存在时）应加入候选',
+    );
+    expect(
+      candidates,
+      contains(n('/storage/media/100/local/files/Music')),
+      reason: 'ohos 媒体库公共音乐目录（存在时）应加入候选',
+    );
+    expect(
+      candidates,
+      isNot(contains(n('/storage/Users/currentUser/Download'))),
+      reason: '不存在的候选目录不应加入',
+    );
+    expect(
+      candidates,
+      isNot(contains(n('/storage/media/100/local/files/Download'))),
+      reason: '不存在的候选目录不应加入',
+    );
+  });
+
+  test('默认候选（ohos 分支）：不注入 isOhos 时按宿主平台判定（桌面为 false）', () async {
+    final store = LocalPathsStore(
+      box: box,
+      isAndroid: false,
+      homePath: tempDir.path,
+      externalStorageDirs: () async => const <String>[],
+      downloadsDirectory: () async => null,
+    );
+
+    final candidates = await store.defaultCandidates();
+    expect(
+      candidates,
+      everyElement(isNot(contains('/storage/Users/'))),
+      reason: '桌面宿主不应出现 ohos 公共目录候选',
+    );
+  });
+
   test('默认候选（Windows 分支）：%USERPROFILE%\\Music 与 Downloads（存在才加）', () async {
     final home = Directory(p.join(tempDir.path, 'user_home'));
     Directory(p.join(home.path, 'Music')).createSync(recursive: true);

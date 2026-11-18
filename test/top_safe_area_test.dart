@@ -231,7 +231,13 @@ void main() {
       tester.view.physicalSize = const Size(1280, 800);
       await tester.pumpWidget(
         ProviderScope(
-          overrides: [musicHubProvider.overrideWithValue(MusicApiHub())],
+          overrides: [
+            musicHubProvider.overrideWithValue(MusicApiHub()),
+            // 设置页音效区 watch playerServiceProvider；不创建 media_kit Player。
+            playerServiceProvider.overrideWith(
+              (ref) => PlayerService(initPlayer: false),
+            ),
+          ],
           child: MaterialApp(
             theme: buildJXTheme(JXColors.primary, darkMode: false),
             home: const Scaffold(body: SettingsPage()),
@@ -305,6 +311,10 @@ Future<void> _pumpPage(
       overrides: [
         // 空聚合入口：页面不发网络请求（api == null 时直接返回）。
         musicHubProvider.overrideWithValue(MusicApiHub()),
+        // 设置页音效区 watch playerServiceProvider；不创建 media_kit Player。
+        playerServiceProvider.overrideWith(
+          (ref) => PlayerService(initPlayer: false),
+        ),
       ],
       child: MaterialApp(
         theme: buildJXTheme(JXColors.primary, darkMode: false),

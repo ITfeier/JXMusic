@@ -20,6 +20,7 @@ class LocalPathsStore {
     this.box,
     this.directoryExists,
     this.isAndroid,
+    this.isOhos,
     this.homePath,
     this.externalStorageDirs,
     this.downloadsDirectory,
@@ -38,6 +39,10 @@ class LocalPathsStore {
 
   /// 平台判定注入（默认 `Platform.isAndroid`），便于在桌面跑 Android 分支单测。
   final bool? isAndroid;
+
+  /// 鸿蒙平台判定注入（默认 `Platform.operatingSystem == 'ohos'`），
+  /// 便于在桌面跑 ohos 分支单测。
+  final bool? isOhos;
 
   /// 用户主目录注入（默认 `%USERPROFILE%` / `$HOME`）。
   final String? homePath;
@@ -62,6 +67,16 @@ class LocalPathsStore {
     if (override != null) return override;
     try {
       return Platform.isAndroid;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  bool get _ohos {
+    final override = isOhos;
+    if (override != null) return override;
+    try {
+      return Platform.operatingSystem.toLowerCase() == 'ohos';
     } catch (_) {
       return false;
     }
@@ -178,6 +193,17 @@ class LocalPathsStore {
         '/storage/emulated/0/QQMusic',
         '/storage/emulated/0/kgmusic/download',
         '/storage/emulated/0/netease/cloudmusic/Music',
+      ]);
+    } else if (_ohos) {
+      // 鸿蒙：应用沙盒目录（步骤 1 的 getExternalStorageDirectories）
+      // + 用户公共音乐/下载目录 + 媒体库公共目录。
+      // 直读公共目录依赖 ohos.permission.READ_MEDIA（module.json5 声明）；
+      // 不存在的目录会在步骤 4 被过滤，沙盒场景天然退化为仅应用目录。
+      raw.addAll(const <String>[
+        '/storage/Users/currentUser/Music',
+        '/storage/Users/currentUser/Download',
+        '/storage/media/100/local/files/Music',
+        '/storage/media/100/local/files/Download',
       ]);
     } else {
       final home = _home;

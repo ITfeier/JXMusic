@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/constants.dart';
+import '../models/playlist.dart';
 import '../models/song.dart';
 import '../providers.dart';
 import '../services/download_service.dart';
@@ -13,8 +14,14 @@ import 'dialogs.dart';
 import 'glass.dart';
 import 'layout.dart';
 import 'my_playlist_page.dart';
+import 'playlist_detail_page.dart';
+import 'playlist_row.dart';
 
-/// 音乐库：收藏 / 播放历史 / 我的歌单 / 已下载
+/// 收藏歌单 tab「去登录」跳转的壳层 tab 下标（顺序必须与 shell_page
+/// 的 navItems/pages 一致：首页/搜索/音乐库/本地/设置）。
+const int _navSettingsIndex = 4;
+
+/// 音乐库：收藏 / 播放历史 / 平台收藏歌单 / 我的歌单 / 已下载
 class LibraryPage extends ConsumerStatefulWidget {
   const LibraryPage({super.key});
 
@@ -29,6 +36,15 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
   bool _downloadsLoading = false;
   String? _downloadsError;
 
+  List<Playlist> _collected = const [];
+  bool _collectedLoading = false;
+  String? _collectedError;
+  Map<int, String> _platformStatus = const {};
+
+  /// 登录会话已失效（登录已过期/风控）的平台：chip 置为警示色，
+  /// 点击同样跳设置页重新登录。
+  Set<int> _platformErrors = const {};
+
   Future<void> _playFrom(List<Song> songs, int index) async {
     final ok = await resolveAndPlay(ref, songs[index], queue: songs);
     if (!ok && mounted) {
@@ -41,7 +57,72 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
   void _switchTab(int index) {
     setState(() => _tab = index);
     // 下载目录可能在别的页面新增了文件，切到下载页时重新扫描
-    if (index == 3) _loadDownloads();
+    if (index == 4) _loadDownloads();
+    // 登录态可能在设置页变化，每次切到收藏歌单页都重新拉取
+    if (index == 2) _loadCollected();
+  }
+
+  /// 聚合各登录平台用户的创建/收藏歌单（轮询交错：QQ/网易/酷狗 A1,B1,C1,A2…）。
+  ///
+  /// 未登录的平台跳过拉取并标记「未登录」；登录的平台展示拉到的歌单数，
+  /// 让「为什么这个平台是空的」一眼可见，而不是静默空白。
+  Future<void> _loadCollected() async {
+    if (_collectedLoading) return;
+    setState(() {
+      _collectedLoading = true;
+      _collectedError = null;
+    });
+    const platforms = [
+      JXPlatform.qq,
+      JXPlatform.netease,
+      JXPlatform.kugou,
+    ];
+    try {
+      final hub = ref.read(musicHubProvider);
+      final byPlatform = await hub.userPlaylistsByPlatform();
+      final status = <int, String>{};
+      final errors = <int>{};
+      for (final p in platforms) {
+        final loggedIn = ref.read(accountProvider(p)) != null;
+        final result = byPlatform[p];
+        if (!loggedIn) {
+          status[p] = '未登录';
+        } else if (result != null && result.hasError) {
+          // 已登录但平台拒绝该会话（如「登录已过期」）：展示真实原因，
+          // 而不是误导性的「0 个歌单」
+          status[p] = result.error!;
+          errors.add(p);
+        } else {
+          status[p] = '${result?.playlists.length ?? 0} 个歌单';
+        }
+      }
+      final lists = [
+        for (final p in platforms)
+          (byPlatform[p]?.playlists ?? const <Playlist>[]).toList(),
+      ];
+      final merged = <Playlist>[];
+      var hasMore = true;
+      while (hasMore) {
+        hasMore = false;
+        for (final list in lists) {
+          if (list.isNotEmpty) {
+            merged.add(list.removeAt(0));
+            hasMore = true;
+          }
+        }
+      }
+      if (mounted) {
+        setState(() {
+          _collected = merged;
+          _platformStatus = status;
+          _platformErrors = errors;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _collectedError = '加载失败：$e');
+    } finally {
+      if (mounted) setState(() => _collectedLoading = false);
+    }
   }
 
   Future<void> _loadDownloads() async {
@@ -116,9 +197,61 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
     }
   }
 
+  /// 导入歌单：解析分享链接 → 拉取歌单全部歌曲 → 存为本地自建歌单
+  Future<void> _importPlaylist() async {
+    final link = await promptText(
+      context,
+      title: '导入歌单',
+      hint: '粘贴网易云 / QQ / 酷狗歌单链接或 ID',
+      maxLength: 500,
+    );
+    if (link == null || !mounted) return;
+    final parsed = parseJXPlaylistLink(link);
+    if (parsed == null) {
+      _toast('无法识别歌单链接，请粘贴网易云 / QQ / 酷狗歌单分享链接');
+      return;
+    }
+    final api = ref.read(musicHubProvider).api(parsed.platform);
+    if (api == null) {
+      _toast('该平台暂不可用');
+      return;
+    }
+    _toast('正在导入歌单…');
+    final songs = await api.playlistSongs(Playlist(
+      id: parsed.id,
+      platform: parsed.platform,
+      title: '',
+    ));
+    if (!mounted) return;
+    if (songs.isEmpty) {
+      _toast('导入失败：歌单为空或链接无效（部分平台需先登录）');
+      return;
+    }
+    final name = await promptText(
+      context,
+      title: '歌单名称',
+      initial: '导入歌单',
+      hint: '歌单名称',
+    );
+    if (name == null || !mounted) return;
+    final store = ref.read(libraryProvider);
+    final playlistId = store.createPlaylist(name);
+    for (final song in songs) {
+      store.addSongToPlaylist(playlistId, song);
+    }
+    _toast('已导入 ${songs.length} 首到「$name」');
+  }
+
   @override
   Widget build(BuildContext context) {
     final store = ref.watch(libraryProvider);
+    // 从设置页登录/退出后返回音乐库（IndexedStack 不重建页面）时，
+    // 收藏歌单 tab 的登录态已变化，重新拉取让状态 chip 立即反映。
+    ref.listen<int>(navIndexProvider, (previous, next) {
+      if (next == 2 && _tab == 2) {
+        _loadCollected();
+      }
+    });
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final textSub =
         isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
@@ -134,34 +267,73 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
             16,
             10,
           ),
-          child: Row(
-            children: [
-              const Text(
-                '音乐库',
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-              ),
-              const Spacer(),
-              if (_tab == 1 && store.history.isNotEmpty)
-                GlassButton(
-                  text: '清空历史',
-                  height: 36,
-                  onPressed: () => _confirmClearHistory(store),
+          child: LayoutBuilder(builder: (context, constraints) {
+            // 窄屏（手机 360~390dp 级）下「导入歌单 + 新建歌单」两个文字
+            // 按钮连同标题放不下一行（会 RenderFlex overflow），换成图标按钮。
+            final compact = constraints.maxWidth < 380;
+            return Row(
+              children: [
+                const Text(
+                  '音乐库',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
                 ),
-              if (_tab == 2)
-                GlassButton(
-                  text: '新建歌单',
-                  height: 36,
-                  icon: Icons.add_rounded,
-                  onPressed: _createPlaylist,
-                ),
-              if (_tab == 3)
-                GlassIconButton(
-                  icon: Icons.refresh_rounded,
-                  size: 36,
-                  onPressed: _loadDownloads,
-                ),
-            ],
-          ),
+                const Spacer(),
+                if (_tab == 1 && store.history.isNotEmpty)
+                  GlassButton(
+                    text: '清空历史',
+                    height: 36,
+                    onPressed: () => _confirmClearHistory(store),
+                  ),
+                if (_tab == 2)
+                  GlassIconButton(
+                    icon: Icons.refresh_rounded,
+                    size: 36,
+                    onPressed: _loadCollected,
+                  ),
+                if (_tab == 3) ...[
+                  if (compact) ...[
+                    Tooltip(
+                      message: '导入歌单',
+                      child: GlassIconButton(
+                        icon: Icons.download_rounded,
+                        size: 34,
+                        onPressed: _importPlaylist,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Tooltip(
+                      message: '新建歌单',
+                      child: GlassIconButton(
+                        icon: Icons.add_rounded,
+                        size: 34,
+                        onPressed: _createPlaylist,
+                      ),
+                    ),
+                  ] else ...[
+                    GlassButton(
+                      text: '导入歌单',
+                      height: 36,
+                      icon: Icons.download_rounded,
+                      onPressed: _importPlaylist,
+                    ),
+                    const SizedBox(width: 8),
+                    GlassButton(
+                      text: '新建歌单',
+                      height: 36,
+                      icon: Icons.add_rounded,
+                      onPressed: _createPlaylist,
+                    ),
+                  ],
+                ],
+                if (_tab == 4)
+                  GlassIconButton(
+                    icon: Icons.refresh_rounded,
+                    size: 36,
+                    onPressed: _loadDownloads,
+                  ),
+              ],
+            );
+          }),
         ),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -181,15 +353,21 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
               ),
               const SizedBox(width: 8),
               _TabChip(
-                text: '歌单 ${store.playlists.length}',
+                text: '收藏歌单',
                 selected: _tab == 2,
                 onTap: () => _switchTab(2),
               ),
               const SizedBox(width: 8),
               _TabChip(
-                text: '下载 ${_downloads.length}',
+                text: '歌单 ${store.playlists.length}',
                 selected: _tab == 3,
                 onTap: () => _switchTab(3),
+              ),
+              const SizedBox(width: 8),
+              _TabChip(
+                text: '下载 ${_downloads.length}',
+                selected: _tab == 4,
+                onTap: () => _switchTab(4),
               ),
             ],
           ),
@@ -198,12 +376,131 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           child: switch (_tab) {
             0 => _buildFavorites(store, textSub),
             1 => _buildHistory(store, textSub),
-            2 => _buildPlaylists(store, textSub),
+            2 => _buildCollected(store, textSub),
+            3 => _buildPlaylists(store, textSub),
             _ => _buildDownloads(textSub),
           },
         ),
       ],
     );
+  }
+
+  /// 收藏歌单：本机收藏（歌单详情页「收藏」保存）+ 各登录平台用户歌单聚合。
+  /// 顶部按平台展示拉取状态（未登录/歌单数），平台歌单里已本机收藏的不再重复。
+  Widget _buildCollected(LibraryStore store, Color textSub) {
+    if (_collectedLoading) {
+      return const Center(
+          child: CircularProgressIndicator(color: JXColors.primary));
+    }
+    if (_collectedError != null) {
+      return _EmptyHint(
+        icon: Icons.error_outline_rounded,
+        text: _collectedError!,
+        textSub: textSub,
+      );
+    }
+    final collected = store.collectedPlaylists;
+    final platformLists = [
+      for (final p in _collected)
+        if (!store.isCollected(p)) p,
+    ];
+    return LayoutBuilder(builder: (context, constraints) {
+      const spacing = 12.0;
+      final columns =
+          (constraints.maxWidth / (128 + spacing)).floor().clamp(1, 8);
+      final cardWidth =
+          (constraints.maxWidth - spacing * (columns - 1)) / columns;
+      Widget cards(List<Playlist> lists) => Wrap(
+            spacing: spacing,
+            runSpacing: 16,
+            children: [
+              for (var i = 0; i < lists.length; i++)
+                JXPlaylistCard(
+                  playlist: lists[i],
+                  width: cardWidth,
+                  gradientIndex: i,
+                  onTap: (playlist) => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => PlaylistDetailPage(playlist: playlist),
+                    ),
+                  ),
+                ),
+            ],
+          );
+      Widget sectionTitle(String text) => Padding(
+            padding: const EdgeInsets.fromLTRB(2, 14, 0, 10),
+            child: Text(
+              text,
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: textSub),
+            ),
+          );
+      return SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 各平台拉取状态：未登录 / 歌单数一目了然；
+            // 未登录的平台点击 chip 直接跳设置页登录。
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                for (final p in const [
+                  JXPlatform.qq,
+                  JXPlatform.netease,
+                  JXPlatform.kugou,
+                ])
+                  _PlatformStatusChip(
+                    platform: p,
+                    status: _platformStatus[p],
+                    error: _platformErrors.contains(p),
+                    onTap: _platformStatus[p] == '未登录' ||
+                            _platformErrors.contains(p)
+                        ? () => ref
+                            .read(navIndexProvider.notifier)
+                            .state = _navSettingsIndex
+                        : null,
+                  ),
+              ],
+            ),
+            if (collected.isNotEmpty) ...[
+              sectionTitle('本机收藏 ${collected.length}'),
+              cards(collected),
+            ],
+            if (platformLists.isNotEmpty) ...[
+              sectionTitle('平台账号歌单'),
+              cards(platformLists),
+            ],
+            if (collected.isEmpty && platformLists.isEmpty) ...[
+              _EmptyHint(
+                icon: Icons.library_music_rounded,
+                text: '还没有收藏的歌单\n在歌单详情页点「收藏」保存到本机；登录平台账号后\n这里还会聚合你在各平台创建和收藏的歌单',
+                textSub: textSub,
+              ),
+              if (const [
+                JXPlatform.qq,
+                JXPlatform.netease,
+                JXPlatform.kugou,
+              ].any((p) =>
+                  _platformStatus[p] == '未登录' ||
+                  _platformErrors.contains(p)))
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: GlassButton(
+                    text: '去设置登录',
+                    height: 38,
+                    icon: Icons.login_rounded,
+                    onPressed: () => ref
+                        .read(navIndexProvider.notifier)
+                        .state = _navSettingsIndex,
+                  ),
+                ),
+            ],
+          ],
+        ),
+      );
+    });
   }
 
   Widget _buildFavorites(LibraryStore store, Color textSub) {
@@ -440,6 +737,45 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
   }
 }
 
+/// 解析歌单分享链接 / 歌单 ID → (平台, 歌单 id)。识别失败返回 null。
+///
+/// 支持的链接形态（2026-11 各平台分享格式）：
+/// · 网易云 music.163.com/#/playlist?id=xxx（id 在 fragment 的 query 里）
+/// · QQ 音乐 y.qq.com/n/ryqq/playlist/XXXX
+/// · 酷狗 *.kugou.com/...?specialid=xxx / global_collection_id=xxx / id=xxx
+/// · 纯数字：按网易云歌单 id 处理
+({int platform, String id})? parseJXPlaylistLink(String input) {
+  final text = input.trim();
+  if (text.isEmpty) return null;
+  if (text.contains('163.com') || text.contains('163cn')) {
+    final id = RegExp(r'[?&]id=(\d+)').firstMatch(text)?.group(1);
+    if (id != null && id.isNotEmpty) {
+      return (platform: JXPlatform.netease, id: id);
+    }
+  }
+  if (text.contains('qq.com')) {
+    final id = RegExp(r'playlist/([A-Za-z0-9]+)').firstMatch(text)?.group(1) ??
+        RegExp(r'[?&]id=([A-Za-z0-9]+)').firstMatch(text)?.group(1);
+    if (id != null && id.isNotEmpty) {
+      return (platform: JXPlatform.qq, id: id);
+    }
+  }
+  if (text.contains('kugou.com')) {
+    final id = RegExp(r'[?&]specialid=(\d+)').firstMatch(text)?.group(1) ??
+        RegExp(r'[?&]global_collection_id=(\d+)')
+                .firstMatch(text)
+                ?.group(1) ??
+        RegExp(r'[?&]id=(\d+)').firstMatch(text)?.group(1);
+    if (id != null && id.isNotEmpty) {
+      return (platform: JXPlatform.kugou, id: id);
+    }
+  }
+  if (RegExp(r'^\d+$').hasMatch(text)) {
+    return (platform: JXPlatform.netease, id: text);
+  }
+  return null;
+}
+
 /// 三选一标签
 class _TabChip extends StatelessWidget {
   final String text;
@@ -520,6 +856,67 @@ class _EmptyHint extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 收藏歌单页顶部：按平台展示登录账号歌单拉取状态（歌单数/未登录）。
+class _PlatformStatusChip extends StatelessWidget {
+  final int platform;
+  final String? status;
+
+  /// 登录会话已失效（「登录已过期」等）：警示色展示，点击跳设置页重登。
+  final bool error;
+
+  /// 未登录/会话失效时非空：点击跳设置页重新登录。
+  final VoidCallback? onTap;
+
+  const _PlatformStatusChip({
+    required this.platform,
+    required this.status,
+    this.error = false,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textSub =
+        isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
+    final isOff = status == '未登录';
+    // 会话失效：琥珀警示色，区别于正常平台色和灰色「未登录」
+    const warn = Color(0xFFF59E0B);
+    final color = error ? warn : JXPlatform.color(platform);
+    final text =
+        status == null ? JXPlatform.name(platform) : '${JXPlatform.name(platform)} · $status';
+    final chip = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: isOff ? Colors.transparent : color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: isOff
+              ? textSub.withValues(alpha: 0.35)
+              : color.withValues(alpha: 0.45),
+        ),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          color: isOff ? textSub : color,
+          fontWeight: isOff ? FontWeight.w400 : FontWeight.w500,
+        ),
+      ),
+    );
+    if (onTap == null) return chip;
+    return Tooltip(
+      message: isOff ? '去设置登录' : '去设置重新登录',
+      child: GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: chip,
       ),
     );
   }

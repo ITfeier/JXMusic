@@ -1,0 +1,24 @@
+﻿{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "module description"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "JXMusic"
+    },
+    {
+      "name": "read_media_reason",
+      "value": "Scan the music files in your device storage for local music playback."
+    },
+    {
+      "name": "keep_background_reason",
+      "value": "Keep music playing in the background and show media controls on the lock screen."
+    }
+  ]
+}

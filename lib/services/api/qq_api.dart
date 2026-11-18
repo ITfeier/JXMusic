@@ -3,6 +3,9 @@ import 'dart:math';
 import 'package:dio/dio.dart';
 import '../../models/song.dart';
 import '../../models/playlist.dart';
+import '../../models/artist.dart';
+import '../../models/album.dart';
+import '../../models/lyric_hit.dart';
 import 'music_api.dart';
 import 'http.dart';
 
@@ -464,7 +467,13 @@ class QQMusicApi implements MusicPlatformApi {
           options: Options(headers: {'Referer': 'https://y.qq.com/'}));
       final songList =
           resp.data['playlist']?['data']?['songlist'] as List? ?? const [];
-      return songList.map<Song>((s) {
+      // uniform_get_Dissinfo 一次返回整单：page>1 时本地切片兑现分页契约；
+      // page=1 保持全量返回（歌单详情页按全量展示/整单入队，不能截断）。
+      var sliced = songList;
+      if (page > 1) {
+        sliced = songList.skip((page - 1) * size).take(size).toList();
+      }
+      return sliced.map<Song>((s) {
         final m = s as Map<String, dynamic>;
         final singers = (m['singer'] as List? ?? [])
             .map((x) => (x as Map)['name'] as String? ?? '')
@@ -517,6 +526,322 @@ class QQMusicApi implements MusicPlatformApi {
     }
   }
 
+  // ---- 分类搜索（client_search_cp t=7/8/9 + client_music_search_songlist；
+  // 2026-11 探针实测；musicu DoSearchForQQMusicDesktop 分类分区已失效）----
+
+  /// 搜索结果文本里的 `<em>` 高亮标签（搜索接口会返回 `<em>关键词</em>`）
+  static String _cleanHighlight(String? s) =>
+      (s ?? '').replaceAll(RegExp(r'</?em>'), '').trim();
+
+  /// QQ 封面图：专辑 mid → 官方 300x300 封面
+  static String _albumCover(String? albumMid) => albumMid == null ||
+          albumMid.isEmpty
+      ? ''
+      : 'https://y.qq.com/music/photo_new/T002R300x300M000$albumMid.jpg';
+
+  @override
+  Future<List<Playlist>> searchPlaylists(String keyword,
+      {int page = 1, int size = 30}) async {
+    try {
+      final resp = await JXHttp.dio.get(
+        'https://c.y.qq.com/soso/fcgi-bin/client_music_search_songlist',
+        queryParameters: {
+          'remoteplace': 'txt.yqq.songlist_search',
+          'searchid': '0',
+          'query': keyword,
+          'page_no': page - 1,
+          'num_per_page': size,
+          'format': 'json',
+          'inCharset': 'utf8',
+          'outCharset': 'utf-8',
+        },
+        options: Options(headers: {'Referer': 'https://y.qq.com/'}),
+      );
+      final list = (resp.data['data']?['list'] as List?) ?? const [];
+      return list.map<Playlist>((raw) {
+        final m = raw as Map<String, dynamic>;
+        return Playlist(
+          id: '${m['dissid'] ?? ''}',
+          platform: platform,
+          title: _cleanHighlight(m['dissname'] as String?),
+          coverUrl: jxNormalizeImageUrl(m['imgurl'] as String?),
+          creator: (m['creator'] as Map?)?['name'] as String? ?? '',
+          songCount: (m['song_count'] as num?)?.toInt() ?? 0,
+        );
+      }).where((p) => p.id.isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<Artist>> searchArtists(String keyword,
+      {int page = 1, int size = 30}) async {
+    try {
+      final resp = await JXHttp.dio.get(
+        _search,
+        queryParameters: {
+          'p': page, 'n': size, 'w': keyword, 't': 9,
+          'format': 'json', 'inCharset': 'utf8', 'outCharset': 'utf-8',
+        },
+        options: Options(headers: {'Referer': 'https://y.qq.com/'}),
+      );
+      final list = (resp.data['data']?['singer']?['list'] as List?) ?? const [];
+      return list.map<Artist>((raw) {
+        final m = raw as Map<String, dynamic>;
+        final mid = '${m['singerMID'] ?? ''}';
+        return Artist(
+          id: mid,
+          platform: platform,
+          name: _cleanHighlight(m['singerName'] as String?),
+          avatarUrl: jxNormalizeImageUrl(m['singerPic'] as String?),
+          albumCount: (m['albumNum'] as num?)?.toInt() ?? 0,
+          songCount: (m['songNum'] as num?)?.toInt() ?? 0,
+        );
+      }).where((a) => a.id.isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<Album>> searchAlbums(String keyword,
+      {int page = 1, int size = 30}) async {
+    try {
+      final resp = await JXHttp.dio.get(
+        _search,
+        queryParameters: {
+          'p': page, 'n': size, 'w': keyword, 't': 8,
+          'format': 'json', 'inCharset': 'utf8', 'outCharset': 'utf-8',
+        },
+        options: Options(headers: {'Referer': 'https://y.qq.com/'}),
+      );
+      final list = (resp.data['data']?['album']?['list'] as List?) ?? const [];
+      return list.map<Album>((raw) {
+        final m = raw as Map<String, dynamic>;
+        final pic = jxNormalizeImageUrl(m['albumPic'] as String?);
+        return Album(
+          id: '${m['albumMID'] ?? ''}',
+          platform: platform,
+          name: _cleanHighlight(m['albumName'] as String?),
+          coverUrl:
+              pic.isNotEmpty ? pic : _albumCover(m['albumMID'] as String?),
+          artist: _cleanHighlight(m['singerName'] as String?),
+          songCount: (m['songCount'] as num?)?.toInt() ??
+              (m['song_count'] as num?)?.toInt() ??
+              0,
+          publishTime: '${m['publicTime'] ?? ''}',
+        );
+      }).where((a) => a.id.isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<LyricHit>> searchLyrics(String keyword,
+      {int page = 1, int size = 30}) async {
+    try {
+      final resp = await JXHttp.dio.get(
+        _search,
+        queryParameters: {
+          'p': page, 'n': size, 'w': keyword, 't': 7,
+          'format': 'json', 'inCharset': 'utf8', 'outCharset': 'utf-8',
+        },
+        options: Options(headers: {'Referer': 'https://y.qq.com/'}),
+      );
+      final list = (resp.data['data']?['lyric']?['list'] as List?) ?? const [];
+      return list.map<LyricHit>((raw) {
+        final m = raw as Map<String, dynamic>;
+        final singers = (m['singer'] as List? ?? const [])
+            .map((x) => (x as Map)['name'] as String? ?? '')
+            .join('、');
+        return LyricHit(
+          song: Song(
+            id: '${m['songmid'] ?? ''}',
+            platform: platform,
+            title: _cleanHighlight(m['songname'] as String?),
+            artist: singers.isEmpty
+                ? _cleanHighlight('${m['singer'] ?? ''}')
+                : singers,
+            album: _cleanHighlight(m['albumname'] as String?),
+            coverUrl: _albumCover(m['albummid'] as String?),
+            duration: (m['interval'] as num?)?.toInt() ?? 0,
+          ),
+          snippet: _cleanHighlight(
+              '${m['content'] ?? m['lyric'] ?? ''}'),
+        );
+      }).where((h) => h.song.id.isNotEmpty).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // ---- 歌手热门歌曲 / 专辑歌曲（详情页数据源）----
+
+  /// musicu.fcg 统一入口（QQ 各详情端点共用）
+  Future<Map<String, dynamic>> _musicuGet(Map<String, dynamic> req) async {
+    final resp = await JXHttp.dio.post(
+      _musicu,
+      data: jsonEncode(req),
+      options: Options(contentType: 'application/json', headers: {
+        'Referer': 'https://y.qq.com/',
+        'Origin': 'https://y.qq.com',
+      }),
+    );
+    return resp.data is Map
+        ? Map<String, dynamic>.from(resp.data as Map)
+        : const {};
+  }
+
+  /// musicu songList 元素（songInfo/song/裸对象三种形态兼容）→ Song
+  Song _songFromMusicuItem(dynamic raw) {
+    final item = raw is Map ? raw : const {};
+    final songInfo = item['songInfo'] ?? item['song'] ?? item;
+    final m = songInfo is Map ? songInfo : const {};
+    final singers = (m['singer'] as List? ?? const [])
+        .map((x) => (x as Map)['name'] as String? ?? '')
+        .where((s) => s.isNotEmpty)
+        .join('、');
+    final album = m['album'] is Map ? m['album'] as Map : const {};
+    final payObj = m['pay'];
+    var payplay = 0;
+    if (payObj is Map) payplay = (payObj['payplay'] as num?)?.toInt() ?? 0;
+    return Song(
+      id: '${m['mid'] ?? m['songmid'] ?? ''}',
+      platform: platform,
+      title: '${m['name'] ?? m['songname'] ?? ''}',
+      artist: singers,
+      album: '${album['name'] ?? m['albumname'] ?? ''}',
+      coverUrl: _albumCover('${album['mid'] ?? m['albummid'] ?? ''}'),
+      duration: (m['interval'] as num?)?.toInt() ?? 0,
+      vip: payplay > 0,
+    );
+  }
+
+  @override
+  Future<List<Song>> artistSongs(Artist artist,
+      {int page = 1, int size = 30}) async {
+    if (artist.id.isEmpty) return const [];
+    try {
+      // fcg_v8_singer_track_cp.fcg 已 404（2026-11 实测）；现行端点：
+      // musichall.song_list_server.GetSingerSongList（探针实测可用）
+      final root = await _musicuGet({
+        'comm': {'ct': 24, 'cv': 0},
+        'req_0': {
+          'module': 'musichall.song_list_server',
+          'method': 'GetSingerSongList',
+          'param': {
+            'singerMid': artist.id,
+            'order': 1, // 1 最热 / 2 最新
+            'number': size,
+            'begin': (page - 1) * size,
+          },
+        },
+      });
+      final list = (root['req_0']?['data']?['songList'] as List?) ?? const [];
+      return list
+          .map<Song>(_songFromMusicuItem)
+          .where((s) => s.id.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Future<List<Song>> albumSongs(Album album,
+      {int page = 1, int size = 30}) async {
+    if (album.id.isEmpty) return const [];
+    try {
+      // music.musichallAlbum.AlbumSongList.GetAlbumSongList（探针实测可用）
+      final root = await _musicuGet({
+        'comm': {'ct': 24, 'cv': 0},
+        'req_0': {
+          'module': 'music.musichallAlbum.AlbumSongList',
+          'method': 'GetAlbumSongList',
+          'param': {
+            'albumMid': album.id,
+            'begin': (page - 1) * size,
+            'num': size,
+          },
+        },
+      });
+      final list = (root['req_0']?['data']?['songList'] as List?) ?? const [];
+      return list
+          .map<Song>(_songFromMusicuItem)
+          .where((s) => s.id.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  // ---- 登录账号歌单（music.musicasset.PlaylistBaseRead.GetPlaylistByUin
+  //      + PlaylistFavRead.CgiGetPlaylistFavInfo，2026-11 对照 L-1124/QQMusicApi）----
+
+  /// musicu 用户歌单元素 → Playlist（v_playlist/v_list 字段别名兼容）
+  Playlist _playlistFromUserItem(dynamic raw) {
+    final m = raw is Map ? raw : const {};
+    return Playlist(
+      // disstid（tid/dissid）才能查 uniform_get_Dissinfo；dirid 是目录号不能用
+      id: '${m['tid'] ?? m['dissid'] ?? m['id'] ?? ''}',
+      platform: platform,
+      title:
+          '${m['dissname'] ?? m['title'] ?? m['name'] ?? m['dirName'] ?? ''}',
+      coverUrl: '${m['picurl'] ?? m['logo'] ?? m['cover'] ?? ''}',
+      creator: '${m['nickname'] ?? m['nick'] ?? ''}',
+      songCount: (m['songnum'] as num?)?.toInt() ??
+          (m['song_cnt'] as num?)?.toInt() ??
+          0,
+    );
+  }
+
+  @override
+  Future<List<Playlist>> userPlaylists(
+      {int page = 1, int size = 30}) async {
+    final uin = _loginUin;
+    if (uin.isEmpty) return const [];
+    try {
+      // 单次 musicu 同时请求「创建的歌单」和「收藏的歌单」：
+      // · req_0 GetPlaylistByUin：param.uin 传明文 uin（可查任意公开用户，占位凭证即可）
+      // · req_1 CgiGetPlaylistFavInfo：上游要求加密 euin，这里 best-effort 传明文，
+      //   失败时该 req 返回空，容忍降级为只展示创建的歌单
+      final root = await _musicuGet({
+        'comm': {'ct': 24, 'cv': 0},
+        'req_0': {
+          'module': 'music.musicasset.PlaylistBaseRead',
+          'method': 'GetPlaylistByUin',
+          'param': {'uin': uin},
+        },
+        'req_1': {
+          'module': 'music.musicasset.PlaylistFavRead',
+          'method': 'CgiGetPlaylistFavInfo',
+          'param': {
+            'uin': uin,
+            'offset': (page - 1) * size,
+            'size': size,
+          },
+        },
+      });
+      final created =
+          (root['req_0']?['data']?['v_playlist'] as List?) ?? const [];
+      final favored =
+          (root['req_1']?['data']?['v_list'] as List?) ?? const [];
+      final seen = <String>{};
+      final merged = <Playlist>[];
+      for (final raw in [...created, ...favored]) {
+        final playlist = _playlistFromUserItem(raw);
+        if (playlist.id.isEmpty || playlist.title.isEmpty) continue;
+        if (!seen.add(playlist.id)) continue;
+        merged.add(playlist);
+      }
+      return merged;
+    } catch (_) {
+      return const [];
+    }
+  }
+
   @override
   void restoreSession(AccountSession? session) {
     _loginCookies
@@ -530,8 +855,10 @@ class QQMusicApi implements MusicPlatformApi {
   // ---- 官方扫码登录（ptqrshow 取码 + ptqrlogin 轮询 + QQ Connect 换登录态）----
   @override
   Future<({String qrUrl, String key})> createQrLogin() async {
+    // 只重置二维码流程状态；_loginCookies 是既有登录态（VIP 播放/歌词要用），
+    // 流程中断（取码失败/用户关闭/二维码过期）时不应丢失，成功换到新会话时
+    // 才会被整体覆盖（与网易云/酷狗的行为保持一致）。
     _ptCookies.clear();
-    _loginCookies.clear();
     _qrsig = null;
     _scanConfirmed = false;
     _lastError = null;
@@ -600,6 +927,17 @@ class QQMusicApi implements MusicPlatformApi {
     final h = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
     return w >= 80 && h >= 80;
   }
+
+  /// QQ 仅支持扫码登录（不做账号密码登录），保持接口默认 null。
+  @override
+  Future<AccountSession?> loginByPassword(String username, String password) async => null;
+
+  @override
+  Future<bool> sendSmsCode(String mobile) async => false;
+
+  @override
+  Future<AccountSession?> loginBySmsCode(String mobile, String code) async =>
+      null;
 
   @override
   Future<AccountSession?> pollQrLogin(String key) async {

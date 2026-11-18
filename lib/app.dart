@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/constants.dart';
 import 'providers.dart';
+import 'services/avsession_service.dart';
 import 'services/mini_mode.dart';
 import 'services/tray_service.dart';
 import 'ui/mini_player_page.dart';
@@ -28,12 +29,17 @@ class _JXAppState extends ConsumerState<JXApp> {
       if (MiniMode.supported) {
         await TrayService.instance.init(player);
       }
+      // ohos：系统媒体会话（锁屏/播控中心/耳机线控）+ 后台播放长时任务
+      if (AvSessionService.supported) {
+        await AvSessionService.instance.init(player);
+      }
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final dark = ref.watch(darkModeProvider);
+    final followSystem = ref.watch(followSystemThemeProvider);
     final seedColor = ref.watch(themeColorProvider);
     final miniMode = ref.watch(miniModeProvider);
 
@@ -42,7 +48,11 @@ class _JXAppState extends ConsumerState<JXApp> {
       debugShowCheckedModeBanner: false,
       theme: buildJXTheme(seedColor, darkMode: false),
       darkTheme: buildJXTheme(seedColor, darkMode: true),
-      themeMode: dark ? ThemeMode.dark : ThemeMode.light,
+      // 跟随系统时交给 MaterialApp 的 ThemeMode.system（自动随系统切换）；
+      // 手动模式按深色开关取 dark/light。
+      themeMode: followSystem
+          ? ThemeMode.system
+          : (dark ? ThemeMode.dark : ThemeMode.light),
       home: JXKeyboardShortcuts(
         child: miniMode ? const MiniPlayerPage() : const ShellPage(),
       ),

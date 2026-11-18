@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
 
 import '../core/constants.dart';
+import '../models/playlist.dart';
 import '../models/song.dart';
 
 /// 一条播放历史
@@ -57,6 +58,7 @@ class LibraryStore extends ChangeNotifier {
   static const String _historyPrefix = 'h:';
   static const String _favoritePrefix = 'f:';
   static const String _playlistPrefix = 'p:';
+  static const String _collectedPrefix = 'c:';
 
   final Box<Map> _historyBox;
   final Box<Map> _playlistsBox;
@@ -65,13 +67,27 @@ class LibraryStore extends ChangeNotifier {
   final List<HistoryEntry> _history = [];
   final List<Song> _favorites = [];
   final List<UserPlaylist> _playlists = [];
+  final List<Playlist> _collectedPlaylists = [];
 
   List<HistoryEntry> get history => List.unmodifiable(_history);
   List<Song> get favorites => List.unmodifiable(_favorites);
   List<UserPlaylist> get playlists => List.unmodifiable(_playlists);
+  List<Playlist> get collectedPlaylists =>
+      List.unmodifiable(_collectedPlaylists);
 
   String _historyKey(DateTime t) =>
       '$_historyPrefix${t.microsecondsSinceEpoch}';
+
+  /// 持久化用的歌曲 JSON：在线平台的 CDN 直链有时效（几分钟到几小时），
+  /// 落库的直链重播时必然过期、还会被当成"已解析"跳过重新解析（静默卡住），
+  /// 因此非本地歌曲一律不存 audioUrl（本地歌曲的 audioUrl 是文件路径，必须保留）。
+  static Map<String, dynamic> _songJsonForStorage(Song song) {
+    final json = song.toJson();
+    if (song.platform != JXPlatform.local) {
+      json['audioUrl'] = null;
+    }
+    return json;
+  }
 
   // ---------------- 播放历史 ----------------
 
@@ -92,7 +108,7 @@ class LibraryStore extends ChangeNotifier {
     _history.insert(0, HistoryEntry(song: song, playedAt: now));
     // 时间用微秒存，保证重启后能按 playedAt 还原出同样的 key
     _historyBox.put(_historyKey(now), {
-      'song': song.toJson(),
+      'song': _songJsonForStorage(song),
       'playedAt': now.microsecondsSinceEpoch,
     });
     while (_history.length > JXConstants.maxHistory) {
@@ -137,7 +153,7 @@ class LibraryStore extends ChangeNotifier {
     }
     _favorites.insert(0, song);
     _playlistsBox.put(key, {
-      'song': song.toJson(),
+      'song': _songJsonForStorage(song),
       'addedAt': _now().millisecondsSinceEpoch,
     });
     notifyListeners();
@@ -211,6 +227,36 @@ class LibraryStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------------- 本机收藏歌单 ----------------
+
+  /// 歌单唯一键：同平台同 id 视为同一个歌单
+  static String collectedKey(Playlist playlist) =>
+      '$_collectedPrefix${playlist.platform}:${playlist.id}';
+
+  bool isCollected(Playlist playlist) =>
+      _collectedPlaylists.any((p) =>
+          p.platform == playlist.platform && p.id == playlist.id);
+
+  /// 收藏 / 取消收藏歌单（本机），返回切换后的状态
+  bool toggleCollectedPlaylist(Playlist playlist) {
+    final index = _collectedPlaylists.indexWhere(
+        (p) => p.platform == playlist.platform && p.id == playlist.id);
+    final key = collectedKey(playlist);
+    if (index >= 0) {
+      _collectedPlaylists.removeAt(index);
+      _playlistsBox.delete(key);
+      notifyListeners();
+      return false;
+    }
+    _collectedPlaylists.insert(0, playlist);
+    _playlistsBox.put(key, {
+      'playlist': playlist.toJson(),
+      'addedAt': _now().millisecondsSinceEpoch,
+    });
+    notifyListeners();
+    return true;
+  }
+
   // ---------------- 持久化 ----------------
 
   void _persistPlaylist(UserPlaylist playlist) {
@@ -218,14 +264,17 @@ class LibraryStore extends ChangeNotifier {
       'id': playlist.id,
       'name': playlist.name,
       'createdAt': playlist.createdAt.millisecondsSinceEpoch,
-      'songs': [for (final s in playlist.songs) s.toJson()],
+      'songs': [for (final s in playlist.songs) _songJsonForStorage(s)],
     });
   }
 
   void _reload() {
     _history.clear();
     _favorites.clear();
+    _favoriteAddedAt.clear();
     _playlists.clear();
+    _collectedPlaylists.clear();
+    _collectedAddedAt.clear();
 
     for (final key in _historyBox.keys) {
       final raw = _historyBox.get(key);
@@ -246,6 +295,9 @@ class LibraryStore extends ChangeNotifier {
         final song = _songOf(raw?['song']);
         if (song == null) continue;
         _favorites.add(song);
+        // 会话内收藏是新的在最前（insert(0)），重载后必须按 addedAt 降序
+        // 恢复同样的顺序，否则重启后收藏列表顺序漂移。
+        _favoriteAddedAt.add(((raw?['addedAt'] as num?)?.toInt() ?? 0));
       } else if (keyStr.startsWith(_playlistPrefix)) {
         final id = raw?['id'] as String? ?? '';
         if (id.isEmpty) continue;
@@ -264,10 +316,50 @@ class LibraryStore extends ChangeNotifier {
               (raw?['createdAt'] as num?)?.toInt() ?? 0),
           songs: songs,
         ));
+      } else if (keyStr.startsWith(_collectedPrefix)) {
+        final playlistRaw = raw?['playlist'];
+        if (playlistRaw is! Map) continue;
+        try {
+          _collectedPlaylists.add(
+              Playlist.fromJson(Map<String, dynamic>.from(playlistRaw)));
+          _collectedAddedAt.add((raw?['addedAt'] as num?)?.toInt() ?? 0);
+        } catch (_) {
+          continue;
+        }
       }
     }
     _playlists.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+
+    // 收藏按 addedAt 降序（最新收藏在前，与会话内 insert(0) 行为一致）
+    if (_favorites.isNotEmpty) {
+      final indexed = List<int>.generate(_favorites.length, (i) => i);
+      indexed.sort((a, b) {
+        final cmp = _favoriteAddedAt[b].compareTo(_favoriteAddedAt[a]);
+        return cmp != 0 ? cmp : a.compareTo(b);
+      });
+      final songs = [for (final i in indexed) _favorites[i]];
+      _favorites
+        ..clear()
+        ..addAll(songs);
+    }
+
+    // 收藏的歌单按 addedAt 降序（最新收藏在前，与会话内 insert(0) 行为一致）
+    if (_collectedPlaylists.isNotEmpty) {
+      final indexed =
+          List<int>.generate(_collectedPlaylists.length, (i) => i);
+      indexed.sort((a, b) {
+        final cmp = _collectedAddedAt[b].compareTo(_collectedAddedAt[a]);
+        return cmp != 0 ? cmp : a.compareTo(b);
+      });
+      final playlists = [for (final i in indexed) _collectedPlaylists[i]];
+      _collectedPlaylists
+        ..clear()
+        ..addAll(playlists);
+    }
   }
+
+  final List<int> _favoriteAddedAt = <int>[];
+  final List<int> _collectedAddedAt = <int>[];
 
   static Song? _songOf(Object? raw) {
     if (raw is! Map) return null;

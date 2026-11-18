@@ -13,6 +13,7 @@ import '../services/api/kugou_api.dart';
 import '../services/api/music_api.dart';
 import '../services/api/netease_api.dart';
 import '../services/api/qq_api.dart';
+import '../services/audio_effect.dart';
 import '../services/tray_service.dart';
 import 'glass.dart';
 import 'layout.dart';
@@ -51,63 +52,142 @@ class SettingsPage extends ConsumerWidget {
           margin: const EdgeInsets.only(bottom: 12),
           child: Column(
             children: [
-              _SwitchTile(
-                icon: Icons.dark_mode_rounded,
-                title: '深色模式',
-                subtitle: 'iOS26 液态玻璃在深色下效果最佳',
-                value: ref.watch(darkModeProvider),
-                onChanged: (v) {
-                  ref.read(darkModeProvider.notifier).state = v;
-                  saveSetting('darkMode', v);
-                },
+              // 外观模式：跟随系统 / 浅色 / 深色（三选一胶囊）
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.brightness_6_rounded,
+                            size: 22,
+                            color: isDark
+                                ? JXColors.textOnDark
+                                : JXColors.textPrimary),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child:
+                              Text('外观模式', style: TextStyle(fontSize: 14)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        for (final (label, value) in const [
+                          ('跟随系统', _ThemeModeChoice.system),
+                          ('浅色', _ThemeModeChoice.light),
+                          ('深色', _ThemeModeChoice.dark),
+                        ])
+                          Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: _ThemeModePill(
+                              label: label,
+                              value: value,
+                              onChanged: (v) => _pickThemeMode(ref, v),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
               ),
               const Divider(height: 1),
+              // 主题色：10 色扩展色板（Wrap 布局，窄屏自动换行）
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: Row(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(Icons.palette_rounded,
+                    Row(
+                      children: [
+                        Icon(Icons.palette_rounded,
+                            size: 22,
+                            color: isDark
+                                ? JXColors.textOnDark
+                                : JXColors.textPrimary),
+                        const SizedBox(width: 14),
+                        const Expanded(
+                          child: Text('主题色', style: TextStyle(fontSize: 14)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final c in JXThemePalette.colors)
+                          GestureDetector(
+                            onTap: () {
+                              ref.read(themeColorProvider.notifier).state = c;
+                              saveSetting('themeColor', c);
+                            },
+                            child: Container(
+                              key: ValueKey('themeSwatch${c.toARGB32()}'),
+                              width: 26,
+                              height: 26,
+                              decoration: BoxDecoration(
+                                color: c,
+                                shape: BoxShape.circle,
+                                border: ref.watch(themeColorProvider) == c
+                                    ? Border.all(color: Colors.white, width: 2)
+                                    : null,
+                              ),
+                              child: ref.watch(themeColorProvider) == c
+                                  ? const Icon(Icons.check_rounded,
+                                      color: Colors.white, size: 16)
+                                  : null,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // ---- 音效 ----
+        const _SectionLabel('音效'),
+        GlassCard(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(Icons.graphic_eq_rounded,
                         size: 22,
                         color: isDark
                             ? JXColors.textOnDark
                             : JXColors.textPrimary),
                     const SizedBox(width: 14),
                     const Expanded(
-                      child: Text('主题色', style: TextStyle(fontSize: 14)),
+                      child: Text('音效', style: TextStyle(fontSize: 14)),
                     ),
-                    for (final c in const [
-                      Color(0xFF5B8DEF),
-                      Color(0xFFD43C33),
-                      Color(0xFF31C27C),
-                      Color(0xFFF26B8A),
-                      Color(0xFF7C6FF0),
-                    ])
-                      GestureDetector(
-                        onTap: () {
-                          ref.read(themeColorProvider.notifier).state = c;
-                          saveSetting('themeColor', c);
-                        },
-                        child: Container(
-                          width: 26,
-                          height: 26,
-                          margin: const EdgeInsets.only(left: 6),
-                          decoration: BoxDecoration(
-                            color: c,
-                            shape: BoxShape.circle,
-                            border: ref.watch(themeColorProvider) == c
-                                ? Border.all(color: Colors.white, width: 2)
-                                : null,
-                          ),
-                          child: ref.watch(themeColorProvider) == c
-                              ? const Icon(Icons.check_rounded,
-                                  color: Colors.white, size: 16)
-                              : null,
-                        ),
-                      ),
                   ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final preset in JXAudioEffects.presets)
+                      _AudioEffectPill(preset: preset),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '播放中实时生效，选「原声」恢复无滤镜',
+                  style: TextStyle(fontSize: 10.5, color: textSub, height: 1.4),
+                ),
+              ],
+            ),
           ),
         ),
 
@@ -211,7 +291,7 @@ class SettingsPage extends ConsumerWidget {
                 title: const Text(JXConstants.appName,
                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
                 subtitle: Text(
-                  'v0.9.7 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
+                  'v0.10.0 · 聚合 QQ音乐 / 网易云 / 酷狗 / 本地',
                   style: TextStyle(fontSize: 11, color: textSub),
                 ),
                 trailing: const Text('预览版',
@@ -316,6 +396,138 @@ class _SectionLabel extends StatelessWidget {
   }
 }
 
+/// 外观模式三选一：跟随系统 / 浅色 / 深色。
+enum _ThemeModeChoice { system, light, dark }
+
+/// 选择外观模式并持久化：
+/// - system：只开「跟随系统」，深色开关保留当前值（关掉跟随后回到该值）；
+/// - light/dark：关掉「跟随系统」，同时写深色开关。
+void _pickThemeMode(WidgetRef ref, _ThemeModeChoice value) {
+  switch (value) {
+    case _ThemeModeChoice.system:
+      ref.read(followSystemThemeProvider.notifier).state = true;
+      saveSetting('followSystemTheme', true);
+    case _ThemeModeChoice.light:
+      ref.read(followSystemThemeProvider.notifier).state = false;
+      saveSetting('followSystemTheme', false);
+      ref.read(darkModeProvider.notifier).state = false;
+      saveSetting('darkMode', false);
+    case _ThemeModeChoice.dark:
+      ref.read(followSystemThemeProvider.notifier).state = false;
+      saveSetting('followSystemTheme', false);
+      ref.read(darkModeProvider.notifier).state = true;
+      saveSetting('darkMode', true);
+  }
+}
+
+/// 音效预设胶囊：选中填主题色，未选中走液态玻璃表面；
+/// 点击即切换 mpv 音频滤镜（PlayerService.setAudioEffect）。
+class _AudioEffectPill extends ConsumerWidget {
+  const _AudioEffectPill({required this.preset});
+
+  final JXAudioEffectPreset preset;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final selected =
+        ref.watch(playerServiceProvider).audioEffect == preset.id;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return GestureDetector(
+      onTap: () => ref.read(playerServiceProvider).setAudioEffect(preset.id),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        key: ValueKey('audioEffectPill_${preset.id}'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? JXColors.primary
+              : (isDark ? JXColors.glassDark : JXColors.glassLight)
+                  .withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? JXColors.primary
+                : (isDark
+                    ? JXColors.glassStrokeDark
+                    : JXColors.glassStrokeLight),
+          ),
+        ),
+        child: Text(
+          preset.label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: selected
+                ? Colors.white
+                : (isDark
+                    ? JXColors.textOnDarkSecondary
+                    : JXColors.textSecondary),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 外观模式胶囊：选中填主题色，未选中走液态玻璃表面。
+class _ThemeModePill extends ConsumerWidget {
+  const _ThemeModePill({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final _ThemeModeChoice value;
+  final ValueChanged<_ThemeModeChoice> onChanged;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final followSystem = ref.watch(followSystemThemeProvider);
+    final dark = ref.watch(darkModeProvider);
+    final current = followSystem
+        ? _ThemeModeChoice.system
+        : (dark ? _ThemeModeChoice.dark : _ThemeModeChoice.light);
+    final selected = current == value;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return GestureDetector(
+      onTap: () => onChanged(value),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        key: ValueKey('themeModePill_${value.name}'),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected
+              ? JXColors.primary
+              : (isDark ? JXColors.glassDark : JXColors.glassLight)
+                  .withValues(alpha: 0.6),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? JXColors.primary
+                : (isDark
+                    ? JXColors.glassStrokeDark
+                    : JXColors.glassStrokeLight),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: selected
+                ? Colors.white
+                : (isDark
+                    ? JXColors.textOnDarkSecondary
+                    : JXColors.textSecondary),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
 class _SwitchTile extends StatelessWidget {
   final IconData icon;
   final String title;
@@ -375,7 +587,7 @@ class _StatusBadge extends StatelessWidget {
   }
 }
 
-/// 打开平台扫码登录对话框（网易云/QQ 通用），成功后写入对应登录态
+/// 打开平台扫码登录对话框（网易云/QQ/酷狗 通用），成功后写入对应登录态
 Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) async {
   final api = ref.read(musicHubProvider).api(platform);
   if (api == null) return;
@@ -383,7 +595,19 @@ Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) asy
     context: context,
     barrierDismissible: false,
     builder: (_) => _QrLoginDialog(
-        api: api, title: '${JXPlatform.name(platform)}扫码登录'),
+        api: api,
+        title: '${JXPlatform.name(platform)}扫码登录',
+        // QQ：说明一键登录为何不可用 + 单设备扫码技巧（截图后相册选图）
+        footnote: platform == 0
+            ? 'QQ 一键登录需腾讯专用 SDK 且不对三方应用开放，暂仅支持扫码：'
+                '请用另一台手机的 QQ 扫码确认；'
+                '仅一部手机时，可截图本二维码 → 手机 QQ「扫一扫」→ 右下角'
+                '「相册」选择该截图完成确认'
+            : null,
+        // 网易云/酷狗支持账号密码登录：扫码弹窗里提供切换入口；QQ 仅扫码
+        onSwitchToPassword: (platform == 1 || platform == 2)
+            ? () => _showPasswordLogin(context, ref, platform)
+            : null),
   );
   if (account == null || !context.mounted) return;
   // 持久化登录态（Hive）+ 同步平台客户端 cookie，重启后依然有效
@@ -412,7 +636,18 @@ Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) asy
 class _QrLoginDialog extends StatefulWidget {
   final MusicPlatformApi api;
   final String title;
-  const _QrLoginDialog({required this.api, required this.title});
+
+  /// 底部说明文案（如 QQ 一键登录不可用的原因），不需要时传 null
+  final String? footnote;
+
+  /// 切换到账号密码登录的回调（不支持账密的平台传 null）
+  final VoidCallback? onSwitchToPassword;
+  const _QrLoginDialog({
+    required this.api,
+    required this.title,
+    this.footnote,
+    this.onSwitchToPassword,
+  });
 
   @override
   State<_QrLoginDialog> createState() => _QrLoginDialogState();
@@ -613,12 +848,382 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
             Text(_hint,
                 style: const TextStyle(
                     fontSize: 12, fontWeight: FontWeight.w500)),
+            if (widget.footnote != null) ...[
+              const SizedBox(height: 6),
+              Text(widget.footnote!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                      fontSize: 10, color: Colors.grey)),
+            ],
+            if (widget.onSwitchToPassword != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: TextButton(
+                  onPressed: () {
+                    _timer?.cancel();
+                    Navigator.of(context).pop();
+                    widget.onSwitchToPassword!();
+                  },
+                  child: const Text('使用账号密码登录',
+                      style: TextStyle(fontSize: 12)),
+                ),
+              ),
             const SizedBox(height: 6),
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
               child: const Text('取消'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 打开账号密码登录对话框（网易云手机号/邮箱、酷狗账号/手机号），成功后写入登录态
+Future<void> _showPasswordLogin(
+    BuildContext context, WidgetRef ref, int platform) async {
+  final api = ref.read(musicHubProvider).api(platform);
+  if (api == null) return;
+  final account = await showDialog<AccountSession>(
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => _PasswordLoginDialog(api: api, platform: platform),
+  );
+  if (account == null || !context.mounted) return;
+  // 持久化登录态（Hive）+ 同步平台客户端 cookie，与扫码登录同一落盘链路
+  ref.read(accountProvider(platform).notifier).login(account);
+  ref.read(musicHubProvider).api(platform)?.restoreSession(account);
+  final name = JXPlatform.name(platform);
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('$name登录成功：${account.nickname}')),
+  );
+}
+
+/// 账号密码登录对话框（玻璃卡片风格；密码仅用于本次请求，不落盘）
+class _PasswordLoginDialog extends StatefulWidget {
+  final MusicPlatformApi api;
+  final int platform;
+  const _PasswordLoginDialog({required this.api, required this.platform});
+
+  @override
+  State<_PasswordLoginDialog> createState() => _PasswordLoginDialogState();
+}
+
+class _PasswordLoginDialogState extends State<_PasswordLoginDialog> {
+  final TextEditingController _user = TextEditingController();
+  final TextEditingController _pwd = TextEditingController();
+  // 手机验证码登录（酷狗 /v7/send_mobile_code + login_by_verifycode；
+  // 网易云 weapi /sms/captcha/sent + eapi login/cellphone captcha）
+  final TextEditingController _smsMobile = TextEditingController();
+  final TextEditingController _smsCode = TextEditingController();
+  bool _loading = false;
+  String? _error;
+  bool _smsMode = false;
+  bool _sending = false;
+  int _countdown = 0;
+  Timer? _countdownTimer;
+
+  @override
+  void dispose() {
+    _user.dispose();
+    _pwd.dispose();
+    _smsMobile.dispose();
+    _smsCode.dispose();
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 酷狗发送短信验证码，成功后 60 秒倒计时防重发
+  Future<void> _sendCode() async {
+    if (_sending || _countdown > 0) return;
+    final mobile = _smsMobile.text.trim();
+    if (mobile.isEmpty) {
+      setState(() => _error = '请输入手机号');
+      return;
+    }
+    setState(() {
+      _sending = true;
+      _error = null;
+    });
+    bool ok = false;
+    try {
+      ok = await widget.api.sendSmsCode(mobile);
+    } catch (e) {
+      debugPrint('[JXMusic][验证码登录] 发码异常：${e.runtimeType}');
+    }
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _sending = false;
+        _error = widget.api.lastError ?? '验证码发送失败，请稍后重试';
+      });
+      return;
+    }
+    setState(() {
+      _sending = false;
+      _countdown = 60;
+      _error = null;
+    });
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      setState(() => _countdown--);
+      if (_countdown <= 0) t.cancel();
+    });
+  }
+
+  Future<void> _submit() async {
+    if (_loading) return;
+    if (_smsMode) {
+      final mobile = _smsMobile.text.trim();
+      final code = _smsCode.text.trim();
+      if (mobile.isEmpty || code.isEmpty) {
+        setState(() => _error = '请输入手机号和验证码');
+        return;
+      }
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+      AccountSession? session;
+      try {
+        session = await widget.api.loginBySmsCode(mobile, code);
+      } catch (e) {
+        debugPrint('[JXMusic][验证码登录] 异常：${e.runtimeType}');
+      }
+      if (!mounted) return;
+      if (session == null) {
+        setState(() {
+          _loading = false;
+          _error = widget.api.lastError ?? '登录失败，请稍后重试';
+        });
+        return;
+      }
+      Navigator.of(context).pop(session);
+      return;
+    }
+    final user = _user.text.trim();
+    final pwd = _pwd.text;
+    if (user.isEmpty || pwd.isEmpty) {
+      setState(() =>
+          _error = '请输入${widget.platform == 1 ? '手机号' : '账号'}和密码');
+      return;
+    }
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    AccountSession? session;
+    try {
+      session = await widget.api.loginByPassword(user, pwd);
+    } catch (e) {
+      // 隐私（QA D-01）：不打印原始异常串（可能含请求参数），只打异常类型
+      debugPrint('[JXMusic][账密登录] 异常：${e.runtimeType}');
+    }
+    if (!mounted) return;
+    if (session == null) {
+      setState(() {
+        _loading = false;
+        _error = widget.api.lastError ?? '登录失败，请稍后重试';
+      });
+      return;
+    }
+    Navigator.of(context).pop(session);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isNetease = widget.platform == 1;
+    final isKugou = widget.platform == 2;
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        width: 320,
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+        decoration: BoxDecoration(
+          color: isDark ? JXColors.glassDark : JXColors.glassLight,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isDark
+                ? JXColors.glassStrokeDark
+                : JXColors.glassStrokeLight,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('${JXPlatform.name(widget.platform)}账号登录',
+                textAlign: TextAlign.center,
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+            // 酷狗 / 网易云支持密码、手机验证码两种方式，顶部提供切换
+            if (isKugou || isNetease) ...[
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _modeChip('密码登录', !_smsMode, () {
+                    if (!_smsMode) return;
+                    setState(() {
+                      _smsMode = false;
+                      _error = null;
+                    });
+                  }),
+                  const SizedBox(width: 8),
+                  _modeChip('验证码登录', _smsMode, () {
+                    if (_smsMode) return;
+                    setState(() {
+                      _smsMode = true;
+                      _error = null;
+                    });
+                  }),
+                ],
+              ),
+            ],
+            const SizedBox(height: 18),
+            if (_smsMode) ...[
+              TextField(
+                controller: _smsMobile,
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(
+                  labelText: '手机号',
+                  hintText: isNetease ? '网易云绑定的手机号' : '酷狗账号绑定的手机号',
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _smsCode,
+                      keyboardType: TextInputType.number,
+                      onSubmitted: (_) => _submit(),
+                      decoration: const InputDecoration(
+                        labelText: '验证码',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed:
+                        (_sending || _countdown > 0) ? null : _sendCode,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(96, 48),
+                    ),
+                    child: Text(
+                      _sending
+                          ? '发送中'
+                          : (_countdown > 0 ? '${_countdown}s' : '获取验证码'),
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isNetease
+                    ? '验证码将发送到网易云账号绑定的手机号；若提示网络环境风险'
+                        '（-460），请切换网络（如手机流量）后重试'
+                    : '验证码将发送到酷狗账号绑定的手机号，部分未绑定手机号的'
+                        '账号请改用密码或扫码登录',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              ),
+            ] else ...[
+              TextField(
+                controller: _user,
+                keyboardType:
+                    isNetease ? TextInputType.phone : TextInputType.text,
+                decoration: InputDecoration(
+                  labelText: isNetease ? '手机号' : '账号 / 手机号',
+                  hintText: isNetease ? '中国大陆手机号，也可输入邮箱' : '酷狗账号或手机号',
+                  border: const OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _pwd,
+                obscureText: true,
+                onSubmitted: (_) => _submit(),
+                decoration: const InputDecoration(
+                  labelText: '密码',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isNetease
+                    ? '账号需已在网易云 App 设置过密码；若提示网络环境风险，'
+                        '请切换网络（如手机流量）重试或改用扫码登录'
+                    : '账号需已在酷狗 App 设置过密码，否则请改用扫码登录',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!,
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(fontSize: 12, color: Color(0xFFE5484D))),
+            ],
+            const SizedBox(height: 18),
+            FilledButton(
+              onPressed: _loading ? null : _submit,
+              style: FilledButton.styleFrom(
+                backgroundColor: JXColors.primary,
+                foregroundColor: Colors.white,
+              ),
+              child: _loading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text('登录'),
+            ),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: _loading ? null : () => Navigator.of(context).pop(),
+              child: const Text('取消', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 登录方式切换标签（选中高亮主题色）
+  Widget _modeChip(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        decoration: BoxDecoration(
+          color: active ? JXColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: active ? JXColors.primary : Colors.grey),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: active ? Colors.white : Colors.grey,
+          ),
         ),
       ),
     );

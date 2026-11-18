@@ -25,6 +25,23 @@ class JXColors {
   static const Color textOnDarkSecondary = Color(0xB3F2F5FA);
 }
 
+/// 设置页「主题色」可选的扩展色板（首项为默认主色）。
+/// 作为 buildJXTheme 的种子色动态生成整套 Material 配色。
+class JXThemePalette {
+  static const List<Color> colors = <Color>[
+    Color(0xFF5B8DEF), // 湖蓝（默认）
+    Color(0xFF2A9EFB), // 晴空
+    Color(0xFF00B8A9), // 青碧
+    Color(0xFF31C27C), // 翠绿
+    Color(0xFFF5A623), // 琥珀
+    Color(0xFFD43C33), // 绯红
+    Color(0xFFF26B8A), // 樱粉
+    Color(0xFF7C6FF0), // 紫罗兰
+    Color(0xFF4FD8F5), // 酷青
+    Color(0xFF5D6D7E), // 石墨
+  ];
+}
+
 /// 平台常量
 class JXPlatform {
   static const int qq = 0;

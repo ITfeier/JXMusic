@@ -1,0 +1,24 @@
+﻿{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "模块描述"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "description"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "JXMusic"
+    },
+    {
+      "name": "read_media_reason",
+      "value": "扫描设备存储中的音乐文件，用于本地音乐播放。"
+    },
+    {
+      "name": "keep_background_reason",
+      "value": "保持音乐在后台持续播放，并在锁屏与控制中心展示播放控制。"
+    }
+  ]
+}

@@ -1,19 +1,25 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/constants.dart';
 import '../models/song.dart';
 import '../models/playlist.dart';
 import '../providers.dart';
+import '../services/guess_you_like.dart';
 import '../services/playback.dart';
 import 'glass.dart';
 import 'playlist_detail_page.dart';
-import 'playlist_list_page.dart';
+import 'playlist_hub_page.dart';
 import 'playlist_row.dart';
 import 'layout.dart';
 
 /// 首页（双端独立布局）：
-/// - 桌面版：今日推荐 banner + 推荐歌单多列网格 + 热门单曲列表
-/// - 手机版：标题 + 搜索框 + 紧凑 banner + 横滑歌单 + 双列热歌榜（响应式）
+/// - 桌面版：今日推荐 banner + 三平台聚合推荐歌单 + 聚合热门单曲列表
+/// - 手机版：标题 + 搜索框 + 紧凑 banner + 聚合横滑歌单 + 三平台聚合热歌榜（响应式）
+///
+/// 「聚合」= QQ / 网易云 / 酷狗按轮询交错合并（QQ#1、网易云#1、酷狗#1、QQ#2…），
+/// 歌单卡片自带平台角标、歌曲行带平台色点，各平台数据一目了然。
 class HomePage extends ConsumerStatefulWidget {
   const HomePage({super.key});
 
@@ -34,6 +40,11 @@ class _HomePageState extends ConsumerState<HomePage> {
 
   /// 分平台推荐歌单：0=QQ、1=网易云、2=酷狗
   final Map<int, List<Playlist>> _playlistsByPlatform = {};
+
+  /// 猜你喜欢：口味候选池（按口味歌手跨平台搜索、排除已听、去重）。
+  /// 展示取样见 [_guessPicks]（每日种子 + 「换一批」批次）。
+  final List<Song> _guessPool = [];
+  int _guessBatch = 0;
 
   DateTime? _lastLoaded;
   String? _error;
@@ -63,7 +74,9 @@ class _HomePageState extends ConsumerState<HomePage> {
         }(),
     ];
 
-    // 三平台推荐歌单各自拉取（分平台展示，互不影响）
+    // 三平台推荐歌单：各拉一个较大的推荐池（30 个），每次刷新随机截取
+    // 其中 10 个（随机窗口，窗口内保持平台排序）。平台推荐池本身每日
+    // 更新，随机窗口保证每次刷新都可能刷出新歌单。
     futures.add(() async {
       for (final p in const [
         JXPlatform.qq,
@@ -73,9 +86,10 @@ class _HomePageState extends ConsumerState<HomePage> {
         final api = hub.api(p);
         if (api == null) continue;
         try {
-          final list = await api.recommendPlaylists(size: 10);
+          final list = await api.recommendPlaylists(size: 30);
           if (mounted) {
-            setState(() => _playlistsByPlatform[p] = list);
+            setState(
+                () => _playlistsByPlatform[p] = _randomWindow(list, 10));
           }
         } catch (_) {
           if (mounted) {
@@ -83,6 +97,46 @@ class _HomePageState extends ConsumerState<HomePage> {
           }
         }
       }
+    }());
+
+    // 猜你喜欢：从播放历史/收藏派生口味歌手，按歌手轮换平台搜索候选池
+    // （排除已听过的歌、去重）。无历史时候选池为空，区块整体隐藏。
+    // 整体 try/catch：口味推荐是增强功能，曲库/搜索失败时静默隐藏，
+    // 绝不影响首页主内容（榜单/歌单）的加载与展示。
+    futures.add(() async {
+      try {
+        final library = ref.read(libraryProvider);
+        final artists =
+            GuessYouLike.tasteArtists(library.history, library.favorites);
+        if (artists.isEmpty) {
+          if (mounted) setState(_guessPool.clear);
+          return;
+        }
+        final heard = <String>{
+          for (final entry in library.history) entry.song.globalId,
+          for (final song in library.favorites) song.globalId,
+        };
+        final pool = <Song>[];
+        final seen = <String>{};
+        const rotation = [JXPlatform.qq, JXPlatform.netease, JXPlatform.kugou];
+        for (var i = 0; i < artists.length; i++) {
+          final api = hub.api(rotation[i % rotation.length]);
+          if (api == null) continue;
+          try {
+            for (final song in await api.searchSongs(artists[i], size: 15)) {
+              if (heard.contains(song.globalId)) continue;
+              if (seen.add(song.globalId)) pool.add(song);
+            }
+          } catch (_) {}
+        }
+        if (mounted) {
+          setState(() {
+            _guessPool
+              ..clear()
+              ..addAll(pool);
+          });
+        }
+      } catch (_) {}
     }());
 
     try {
@@ -103,11 +157,70 @@ class _HomePageState extends ConsumerState<HomePage> {
     ));
   }
 
-  /// 该平台「全部歌单」页（分页网格；替代旧版「换一批」）
-  void _openAllPlaylists(int platform) {
-    Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => PlaylistListPage(platform: platform),
-    ));
+  /// 「全部歌单 · 三平台」聚合页（顶部平台 pill 切换各平台分页歌单）
+  void _openPlaylistHub() {
+    Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const PlaylistHubPage()));
+  }
+
+  /// 从列表中随机截取最多 [take] 个元素的连续窗口（窗口内保持原顺序）。
+  /// 用于「刷新随机出新歌单」：池子小于 take 时原样返回。
+  static List<T> _randomWindow<T>(List<T> list, int take) {
+    if (list.length <= take) return list;
+    final start = Random().nextInt(list.length - take + 1);
+    return list.sublist(start, start + take);
+  }
+
+  /// 多列表轮询交错合并：[A1,B1,C1,A2,B2,C2,…]，长度不齐时短的自动跳过。
+  /// 用于三平台歌单 / 热歌的「聚合」展示，保证任何平台接口缺数据时其余
+  /// 平台的内容仍按原顺序补位。
+  static List<T> _interleave<T>(List<List<T>> lists) {
+    final out = <T>[];
+    var maxLen = 0;
+    for (final l in lists) {
+      if (l.length > maxLen) maxLen = l.length;
+    }
+    for (var i = 0; i < maxLen; i++) {
+      for (final l in lists) {
+        if (i < l.length) out.add(l[i]);
+      }
+    }
+    return out;
+  }
+
+  /// 三平台推荐歌单聚合（轮询交错，卡片自带平台角标）
+  List<Playlist> _mergedPlaylists() => _interleave<Playlist>([
+        for (final p in const [JXPlatform.qq, JXPlatform.netease, JXPlatform.kugou])
+          _playlistsByPlatform[p] ?? const <Playlist>[],
+      ]);
+
+  /// 三平台热歌聚合（轮询交错，顺序 = QQ、网易云、酷狗）
+  List<Song> _mergedTopSongs() => _interleave<Song>([
+        for (final p in const [JXPlatform.qq, JXPlatform.netease, JXPlatform.kugou])
+          _tops[p] ?? const <Song>[],
+      ]);
+
+  /// 猜你喜欢当日取样：种子 = 日期种子 ×1000 + 「换一批」批次。
+  /// 同一天同一批结果稳定；点「换一批」批次 +1 从候选池换一批新歌。
+  List<Song> _guessPicks() =>
+      GuessYouLike.picks(_guessPool, DateTime.now(), _guessBatch);
+
+  /// 桌面版「猜你喜欢」歌曲行列表（历史口味派生 + 每日种子取样）
+  List<Widget> _guessRows() {
+    final songs = _guessPicks();
+    return [
+      for (var i = 0; i < songs.length; i++)
+        SongRow(
+          title: songs[i].title,
+          artist: songs[i].artist,
+          tag: JXPlatform.name(songs[i].platform),
+          tagColor: JXPlatform.color(songs[i].platform),
+          durationText: jxFormatDuration(songs[i].duration),
+          coverUrl: songs[i].coverUrl,
+          gradientIndex: i,
+          onTap: () => _resolveAndPlay(songs[i], queue: songs),
+        ),
+    ];
   }
 
   @override
@@ -159,23 +272,41 @@ class _HomePageState extends ConsumerState<HomePage> {
                 ),
               ),
             ),
-          // 分平台推荐歌单（三平台各自展示；「更多」进入该平台全部歌单页，
-          // 回首页超 60s 自动刷新）
-          for (final platform in const [0, 1, 2]) ...[
+          // 三平台聚合推荐歌单（轮询交错，卡片自带平台角标；「更多」进
+          // 全部歌单聚合页，可按平台切换分页浏览）
+          SliverToBoxAdapter(
+            child: JXSectionHeader(
+              title: '推荐歌单 · 三平台聚合',
+              onMore: _openPlaylistHub,
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: JXPlaylistRow(
+              playlists: _mergedPlaylists(),
+              cardWidth: 176,
+              onTap: _openPlaylist,
+            ),
+          ),
+          // 猜你喜欢（历史口味派生，每日种子稳定；「换一批」批次 +1 换新歌）
+          if (_guessPicks().isNotEmpty) ...[
             SliverToBoxAdapter(
               child: JXSectionHeader(
-                title: '${JXPlatform.name(platform)} · 推荐歌单',
-                onMore: () => _openAllPlaylists(platform),
+                title: '猜你喜欢',
+                moreText: '换一批 ›',
+                onMore: () => setState(() => _guessBatch++),
               ),
             ),
             SliverToBoxAdapter(
-              child: JXPlaylistRow(
-                playlists: _playlistsByPlatform[platform] ?? const [],
-                cardWidth: 176,
-                onTap: _openPlaylist,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(
+                  children: _guessRows(),
+                ),
               ),
             ),
-          ],          // 热门单曲：默认每平台 3 首，点「更多 ›」内联展开全部已加载歌曲
+          ],
+          // 热门单曲（三平台轮询交错聚合）：默认每平台 3 首共 9 首，
+          // 点「更多 ›」内联展开全部已加载歌曲
           SliverToBoxAdapter(
             child: JXSectionHeader(
               title: '热门单曲',
@@ -187,10 +318,7 @@ class _HomePageState extends ConsumerState<HomePage> {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Column(
-                children: [
-                  for (final platform in const [0, 1, 2])
-                    ..._hotRows(platform),
-                ],
+                children: _hotRows(),
               ),
             ),
           ),
@@ -203,15 +331,9 @@ class _HomePageState extends ConsumerState<HomePage> {
   // ---------------- 手机版 ----------------
   Widget _buildMobile(BuildContext context) {
     final w = MediaQuery.of(context).size.width;
-    final singleCol = w < 360; // <360dp：单列大图
     final cardW = (w * 0.30).clamp(100.0, 140.0); // 360~400 双列 / >400 放大
-    final rankRows = w < 400 ? 3 : 4; // >400dp 信息密度提升
-
-    // 前两个有数据的平台榜单
-    final plats = <int>[
-      for (final p in const [0, 1, 2])
-        if (_tops[p]?.isNotEmpty ?? false) p
-    ];
+    final collapsedRankRows = w < 400 ? 6 : 9; // 聚合卡折叠：每平台 2/3 首
+    final mergedTops = _mergedTopSongs();
 
     return CustomScrollView(
       slivers: [
@@ -252,22 +374,43 @@ class _HomePageState extends ConsumerState<HomePage> {
               child: JXBanner(compact: true, onPlay: () => _playTop()),
             ),
           ),
-          // 分平台推荐歌单（横滑卡片，宽度随屏宽缩放；「更多」进入全部歌单页）
-          for (final platform in const [0, 1, 2]) ...[
+          // 三平台聚合推荐歌单（轮询交错，卡片自带平台角标）
+          SliverToBoxAdapter(
+            child: JXSectionHeader(
+                title: '推荐歌单 · 三平台聚合',
+                paddingLeft: 16,
+                onMore: _openPlaylistHub),
+          ),
+          SliverToBoxAdapter(
+            child: JXPlaylistRow(
+              playlists: _mergedPlaylists(),
+              cardWidth: cardW,
+              onTap: _openPlaylist,
+            ),
+          ),
+          // 猜你喜欢（历史口味派生，每日种子稳定；「换一批」批次 +1 换新歌）
+          if (_guessPicks().isNotEmpty) ...[
             SliverToBoxAdapter(
               child: JXSectionHeader(
-                  title: '${JXPlatform.name(platform)} · 推荐歌单',
+                  title: '猜你喜欢',
                   paddingLeft: 16,
-                  onMore: () => _openAllPlaylists(platform)),
+                  moreText: '换一批 ›',
+                  onMore: () => setState(() => _guessBatch++)),
             ),
             SliverToBoxAdapter(
-              child: JXPlaylistRow(
-                playlists: _playlistsByPlatform[platform] ?? const [],
-                cardWidth: cardW,
-                onTap: _openPlaylist,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child:               _AggRankCard(
+                  title: '根据你的口味每日推荐',
+                  songs: _guessPicks(),
+                  onPlay: (s) => _resolveAndPlay(s, queue: _guessPicks()),
+                  maxRows: _guessPicks().length,
+                ),
               ),
             ),
-          ],          // 热歌榜：默认 3/4 行，点「更多 ›」内联展开该平台全部已加载歌曲
+          ],
+          // 热歌榜（三平台轮询交错聚合）：默认 6 行（每平台 2 首），
+          // 点「更多 ›」内联展开全部已加载歌曲（不重新请求网络）
           SliverToBoxAdapter(
             child: JXSectionHeader(
                 title: '热歌榜',
@@ -279,42 +422,15 @@ class _HomePageState extends ConsumerState<HomePage> {
           SliverToBoxAdapter(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: plats.isEmpty
+              child: mergedTops.isEmpty
                   ? const SizedBox(height: 40)
-                  : singleCol || plats.length == 1
-                      ? _RankCard(
-                          platform: plats[0],
-                          songs: _tops[plats[0]]!,
-                          onPlay: (s) => _resolveAndPlay(s),
-                          maxRows:
-                              _rankExpanded ? _tops[plats[0]]!.length : rankRows,
-                        )
-                      : Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: _RankCard(
-                                platform: plats[0],
-                                songs: _tops[plats[0]]!,
-                                onPlay: (s) => _resolveAndPlay(s),
-                                maxRows: _rankExpanded
-                                    ? _tops[plats[0]]!.length
-                                    : rankRows,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: _RankCard(
-                                platform: plats[1],
-                                songs: _tops[plats[1]]!,
-                                onPlay: (s) => _resolveAndPlay(s),
-                                maxRows: _rankExpanded
-                                    ? _tops[plats[1]]!.length
-                                    : rankRows,
-                              ),
-                            ),
-                          ],
-                        ),
+                  : _AggRankCard(
+                      songs: mergedTops,
+                      onPlay: (s) => _resolveAndPlay(s, queue: mergedTops),
+                      maxRows: _rankExpanded
+                          ? mergedTops.length
+                          : collapsedRankRows,
+                    ),
             ),
           ),
           const SliverToBoxAdapter(child: SizedBox(height: 24)),
@@ -323,24 +439,24 @@ class _HomePageState extends ConsumerState<HomePage> {
     );
   }
 
-  /// 桌面版「热门单曲」每个平台的行：默认只显示前 3 首，点「更多 ›」展开后
-  /// 显示该平台已加载的全部 topSongs（来自 _tops 缓存，不重新请求网络）。
-  List<Widget> _hotRows(int platform) {
-    final songs = _tops[platform] ?? const <Song>[];
+  /// 桌面版「热门单曲」聚合行：三平台轮询交错，默认每平台 3 首共 9 首，
+  /// 点「更多 ›」展开后显示全部已加载歌曲（来自 _tops 缓存，不重新请求网络）。
+  List<Widget> _hotRows() {
+    final songs = _mergedTopSongs();
     final limit = _hotExpanded
         ? songs.length
-        : (songs.length > 3 ? 3 : songs.length);
+        : (songs.length > 9 ? 9 : songs.length);
     return [
       for (var i = 0; i < limit; i++)
         SongRow(
           title: songs[i].title,
           artist: songs[i].artist,
-          tag: JXPlatform.name(platform),
-          tagColor: JXPlatform.color(platform),
+          tag: JXPlatform.name(songs[i].platform),
+          tagColor: JXPlatform.color(songs[i].platform),
           durationText: jxFormatDuration(songs[i].duration),
           coverUrl: songs[i].coverUrl,
           gradientIndex: i,
-          onTap: () => _resolveAndPlay(songs[i]),
+          onTap: () => _resolveAndPlay(songs[i], queue: songs),
         ),
     ];
   }
@@ -349,14 +465,14 @@ class _HomePageState extends ConsumerState<HomePage> {
     for (final p in const [0, 1, 2]) {
       final songs = _tops[p];
       if (songs != null && songs.isNotEmpty) {
-        await _resolveAndPlay(songs.first);
+        await _resolveAndPlay(songs.first, queue: songs);
         return;
       }
     }
   }
 
-  Future<void> _resolveAndPlay(Song song) async {
-    final ok = await resolveAndPlay(ref, song);
+  Future<void> _resolveAndPlay(Song song, {List<Song>? queue}) async {
+    final ok = await resolveAndPlay(ref, song, queue: queue);
     if (ok || !mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(
@@ -436,18 +552,20 @@ class _MobileHeader extends StatelessWidget {
   }
 }
 
-/// 手机版热歌榜卡片（双列并排 / 窄屏单列大图）
-class _RankCard extends StatelessWidget {
-  final int platform;
+/// 手机版三平台聚合热歌榜卡片：轮询交错的合并榜单（合并序号 1..N），
+/// 每行带平台色点 + 平台短名，行数由 [maxRows] 控制（折叠/展开）。
+/// [title] 用于复用卡片头部文案（热歌榜 / 猜你喜欢）。
+class _AggRankCard extends StatelessWidget {
   final List<Song> songs;
   final void Function(Song) onPlay;
   final int maxRows;
+  final String title;
 
-  const _RankCard({
-    required this.platform,
+  const _AggRankCard({
     required this.songs,
     required this.onPlay,
     required this.maxRows,
+    this.title = '三平台热歌聚合',
   });
 
   @override
@@ -465,22 +583,25 @@ class _RankCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  color: JXPlatform.color(platform),
-                  shape: BoxShape.circle,
+              // 三平台色点并排：聚合榜的来源标识
+              for (var i = 0; i < 3; i++) ...[
+                if (i > 0) const SizedBox(width: 4),
+                Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: JXPlatform.color(const [0, 1, 2][i]),
+                    shape: BoxShape.circle,
+                  ),
                 ),
-              ),
+              ],
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  '${JXPlatform.name(platform)} · 热榜',
+                  title,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w700),
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
                 ),
               ),
               GestureDetector(
@@ -511,6 +632,35 @@ class _RankCard extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 4),
+                    // 平台色点 + 短名（QQ / 网易云 / 酷狗）
+                    SizedBox(
+                      width: 38,
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 5,
+                            height: 5,
+                            decoration: BoxDecoration(
+                              color: JXPlatform.color(songs[i].platform),
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Expanded(
+                            child: Text(
+                              JXPlaylistCard.platformShort(songs[i].platform),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: JXPlatform.color(songs[i].platform)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 6),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

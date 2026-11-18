@@ -69,7 +69,14 @@ class DownloadService {
         .trim();
     // 标题/歌手都为空时 raw 只剩 " - "，去掉分隔符后为空则兜底文件名
     if (name.replaceAll(RegExp(r'[-_\s]+'), '').isEmpty) name = '未命名';
-    if (name.length > 100) name = name.substring(0, 100);
+    if (name.length > 100) {
+      var end = 100;
+      // 截断点落在 UTF-16 代理对中间会留下孤立代理项，
+      // 平台文件名编码（Windows/ohos）会直接抛 FileSystemException，退一位。
+      final unit = name.codeUnitAt(end - 1);
+      if (unit >= 0xD800 && unit <= 0xDBFF) end--;
+      name = name.substring(0, end);
+    }
     return '$name${_extensionOf(url)}';
   }
 
@@ -106,7 +113,14 @@ class DownloadService {
     return dir;
   }
 
+  /// 正在下载的目标路径（防并发：同一首歌并发下载写同一个文件会交错损坏）。
+  static final Set<String> _inFlightPaths = <String>{};
+
   /// 下载歌曲，返回最终保存路径。重复下载会自动加 (2)(3) 后缀。
+  ///
+  /// 先写 `<目标名>.part` 再原子重命名：进程中途被杀/断网不会留下顶着正式
+  /// 扩展名的半截文件（那种文件会被 listDownloaded 当成可播条目、且永远
+  /// 挡住去重循环导致同歌永远下成 "(2)"）。
   Future<String> download(
     Song song, {
     void Function(double progress)? onProgress,
@@ -121,20 +135,36 @@ class DownloadService {
     final ext = p.extension(fileName);
     var file = File(p.join(dir.path, fileName));
     var index = 1;
-    while (file.existsSync()) {
+    while (file.existsSync() || _inFlightPaths.contains(file.path)) {
       index++;
       file = File(p.join(dir.path, '$base ($index)$ext'));
     }
-    await JXHttp.dio.download(
-      url,
-      file.path,
-      options: Options(headers: headersFor(song.platform)),
-      onReceiveProgress: (received, total) {
-        if (total > 0) {
-          onProgress?.call(received / total);
-        }
-      },
-    );
+    final part = File('${file.path}.part');
+    _inFlightPaths.add(file.path);
+    try {
+      if (part.existsSync()) {
+        part.deleteSync();
+      }
+      await JXHttp.dio.download(
+        url,
+        part.path,
+        options: Options(headers: headersFor(song.platform)),
+        onReceiveProgress: (received, total) {
+          if (total > 0) {
+            onProgress?.call(received / total);
+          }
+        },
+      );
+      await part.rename(file.path);
+    } catch (e) {
+      // 下载中断：清掉半截 .part，不留垃圾
+      try {
+        if (part.existsSync()) part.deleteSync();
+      } catch (_) {}
+      rethrow;
+    } finally {
+      _inFlightPaths.remove(file.path);
+    }
     return file.path;
   }
 

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -14,7 +14,7 @@ import 'package:jxmusic/ui/home_page.dart';
 /// 记录调用次数：若首页没有真正发起加载（例如日后误删 initState 里的
 /// `_load()`），只断言「无 spinner + 出现标题」会误通过；调用计数把
 /// 「首次进入确实请求了数据」也锁进回归。
-class _FakePlatformApi implements MusicPlatformApi {
+class _FakePlatformApi extends MusicPlatformApi {
   _FakePlatformApi(this.platform);
 
   @override
@@ -58,6 +58,18 @@ class _FakePlatformApi implements MusicPlatformApi {
 
   @override
   Future<AccountSession?> pollQrLogin(String key) async => null;
+
+  @override
+  Future<AccountSession?> loginByPassword(
+          String username, String password) async =>
+      null;
+
+  @override
+  Future<bool> sendSmsCode(String mobile) async => false;
+
+  @override
+  Future<AccountSession?> loginBySmsCode(String mobile, String code) async =>
+      null;
 
   @override
   void restoreSession(AccountSession? session) {}

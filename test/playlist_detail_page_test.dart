@@ -1,6 +1,9 @@
+﻿import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 
 import 'package:jxmusic/core/constants.dart';
 import 'package:jxmusic/models/playlist.dart';
@@ -42,7 +45,7 @@ Song _song(int index) => Song(
     );
 
 /// 固定返回指定歌曲的 fake 平台实现（不联网）。
-class _FakePlatformApi implements MusicPlatformApi {
+class _FakePlatformApi extends MusicPlatformApi {
   _FakePlatformApi({required this.songs});
 
   final List<Song> songs;
@@ -84,6 +87,18 @@ class _FakePlatformApi implements MusicPlatformApi {
 
   @override
   Future<AccountSession?> pollQrLogin(String key) async => null;
+
+  @override
+  Future<AccountSession?> loginByPassword(
+          String username, String password) async =>
+      null;
+
+  @override
+  Future<bool> sendSmsCode(String mobile) async => false;
+
+  @override
+  Future<AccountSession?> loginBySmsCode(String mobile, String code) async =>
+      null;
 
   @override
   void restoreSession(AccountSession? session) {}
@@ -128,6 +143,16 @@ Future<_FakePlatformApi> _pumpDetailPage(
 }
 
 void main() {
+  setUpAll(() async {
+    // PlaylistDetailPage 会 watch libraryProvider（收藏歌单星标），
+    // LibraryStore 构造需要 Hive box，先初始化。
+    final dir =
+        await Directory.systemTemp.createTemp('jxmusic_pl_detail_test');
+    Hive.init(dir.path);
+    await Hive.openBox<Map>(JXConstants.hiveBoxHistory);
+    await Hive.openBox<Map>(JXConstants.hiveBoxPlaylists);
+  });
+
   testWidgets('QQ 歌单详情加载后按实际首数显示、底部有 PlayerBar、360x640 不溢出',
       (tester) async {
     final api = await _pumpDetailPage(

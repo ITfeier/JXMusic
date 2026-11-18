@@ -77,6 +77,17 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
     if (!ok && mounted) _toastPlayFailed();
   }
 
+  /// 收藏 / 取消收藏歌单（本机），音乐库「收藏歌单」tab 顶部展示
+  void _toggleCollect() {
+    final store = ref.read(libraryProvider);
+    final added = store.toggleCollectedPlaylist(widget.playlist);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content:
+          Text(added ? '已收藏「${widget.playlist.title}」' : '已取消收藏'),
+    ));
+  }
+
   void _toastPlayFailed() {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台')),
@@ -90,6 +101,8 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
     final textSub =
         isDark ? JXColors.textOnDarkSecondary : JXColors.textSecondary;
     final p = widget.playlist;
+    final collected =
+        ref.watch(libraryProvider).isCollected(widget.playlist);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -108,7 +121,7 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
             children: [
               // 头部
               Padding(
-                padding: const EdgeInsets.fromLTRB(8, 8, 16, 8),
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
                 child: Row(
                   children: [
                     GlassIconButton(
@@ -122,6 +135,19 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
                         style: TextStyle(
                             fontSize: 15, fontWeight: FontWeight.w600),
                       ),
+                    ),
+                    IconButton(
+                      icon: Icon(
+                        collected
+                            ? Icons.star_rounded
+                            : Icons.star_border_rounded,
+                        size: 24,
+                        color: collected
+                            ? JXColors.primary
+                            : textColor.withValues(alpha: 0.7),
+                      ),
+                      tooltip: collected ? '取消收藏' : '收藏歌单',
+                      onPressed: _toggleCollect,
                     ),
                   ],
                 ),

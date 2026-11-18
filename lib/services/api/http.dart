@@ -10,10 +10,26 @@ class JXHttp {
       'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
               '(KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-      'Referer': 'https://music.163.com/',
     },
   ))
     ..interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        // Referer 不再全局默认 music.163.com（对 QQ/酷狗是站外 Referer，
+        // 服务端一旦收紧校验就会静默空结果）。未显式指定时按目标域补：
+        // - 163.com → music.163.com；qq.com → y.qq.com；kugou.com → m.kugou.com
+        // - 其它域不带 Referer
+        if (options.headers['Referer'] == null) {
+          final host = options.uri.host.toLowerCase();
+          if (host.contains('163.com')) {
+            options.headers['Referer'] = 'https://music.163.com/';
+          } else if (host.contains('qq.com')) {
+            options.headers['Referer'] = 'https://y.qq.com/';
+          } else if (host.contains('kugou.com')) {
+            options.headers['Referer'] = 'https://m.kugou.com/';
+          }
+        }
+        handler.next(options);
+      },
       onResponse: (resp, handler) {
         // 部分接口以 text/plain、text/html 返回 JSON 内容，Dio 默认不解码，
         // 统一在此将 JSON 字符串解析为 Map/List，保证上层可直接按 Map 取值。

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -10,6 +11,7 @@ import 'services/api/music_api.dart';
 import 'services/api/netease_api.dart';
 import 'services/api/qq_api.dart';
 import 'services/api/kugou_api.dart';
+import 'services/audio_effect.dart';
 import 'services/library_store.dart';
 import 'services/local_format_service.dart';
 import 'services/local_formats/format_decoder.dart';
@@ -22,6 +24,13 @@ import 'services/player_service.dart';
 
 /// 平台登录态在 Hive 里的键（按平台区分）
 String _accountKey(int platform) => 'platform_$platform';
+
+/// 桌面平台（Windows/macOS/Linux）保留应用内软件音量；
+/// 手机端（Android/ohos/iOS）音量由系统音量键接管。
+bool get _desktopPlatform =>
+    defaultTargetPlatform == TargetPlatform.windows ||
+    defaultTargetPlatform == TargetPlatform.macOS ||
+    defaultTargetPlatform == TargetPlatform.linux;
 
 /// 从 Hive 读回某个平台的登录态（存档损坏时按未登录处理）
 AccountSession? _loadAccount(int platform) {
@@ -131,9 +140,11 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     onSettingChanged: saveSetting,
     // 队列懒解密失败时给 UI 一个具体中文原因（评审 R-11）
     resolutionErrorHint: () => ref.read(localFormatServiceProvider).lastError,
-    initialVolume: _readSettingsDouble('volume', 80),
+    // 手机端音量由系统接管：软件音量固定 100，不恢复历史应用内音量
+    initialVolume: _desktopPlatform ? _readSettingsDouble('volume', 80) : 100,
     initialLoopMode: _readSettingsInt('loopMode', 2),
     initialSpeed: _readSettingsDouble('speed', 1.0),
+    initialAudioEffect: _readSettingsString('audioEffect', JXAudioEffects.noneId),
   );
   // 同上：ChangeNotifierProvider 会自动 dispose service，避免二次 dispose 断言。
   return service;
@@ -166,7 +177,9 @@ final localMusicServiceProvider = Provider<LocalMusicService>((ref) {
 /// 深浅主题
 final darkModeProvider = StateProvider<bool>((ref) {
   final box = Hive.box<dynamic>(JXConstants.hiveBoxSettings);
-  return box.get('darkMode', defaultValue: true) as bool? ?? true;
+  // 不做硬 as 转换：存档类型漂移（旧版本/损坏）时硬转会直接崩溃循环在启动期
+  final v = box.get('darkMode');
+  return v is bool ? v : true;
 });
 
 /// 主题色
@@ -174,6 +187,13 @@ final themeColorProvider = StateProvider<Color>((ref) {
   final box = Hive.box<dynamic>(JXConstants.hiveBoxSettings);
   final v = box.get('themeColor');
   return v is int ? Color(v) : JXColors.primary;
+});
+
+/// 外观是否跟随系统深浅色（true 时忽略 [darkModeProvider]，交给系统切换）
+final followSystemThemeProvider = StateProvider<bool>((ref) {
+  final box = Hive.box<dynamic>(JXConstants.hiveBoxSettings);
+  final v = box.get('followSystemTheme');
+  return v is bool ? v : false;
 });
 
 /// 设置持久化助手
@@ -195,6 +215,14 @@ int _readSettingsInt(String key, int fallback) {
   try {
     final v = Hive.box<dynamic>(JXConstants.hiveBoxSettings).get(key);
     if (v is num) return v.toInt();
+  } catch (_) {}
+  return fallback;
+}
+
+String _readSettingsString(String key, String fallback) {
+  try {
+    final v = Hive.box<dynamic>(JXConstants.hiveBoxSettings).get(key);
+    if (v is String) return v;
   } catch (_) {}
   return fallback;
 }

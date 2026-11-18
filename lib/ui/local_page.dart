@@ -79,6 +79,10 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       widget.androidOverride ??
       (defaultTargetPlatform == TargetPlatform.android);
 
+  /// 鸿蒙：应用只能访问自身沙盒目录，系统公共音乐目录不可见
+  /// （defaultTargetPlatform 在 flutter_ohos 下返回 TargetPlatform.ohos）。
+  bool get _isOhos => defaultTargetPlatform == TargetPlatform.ohos;
+
   @override
   void initState() {
     super.initState();
@@ -503,6 +507,9 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
 
     final children = <Widget>[];
     if (_scanErrors.isNotEmpty) children.add(_buildErrors(textSub));
+    if (_isOhos && _songs.isEmpty) {
+      children.add(_buildOhosSandboxHint(textColor, textSub));
+    }
     if (_songs.isEmpty) {
       children.add(_buildEmpty(textColor, textSub));
     } else {
@@ -555,6 +562,44 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
               '…还有 ${_scanErrors.length - shown} 条错误',
               style: TextStyle(fontSize: 10.5, color: textSub),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// 鸿蒙空态说明：沙盒扫描天然受限，明确告知用户原因与出路，
+  /// 避免被当成「扫描坏了」。
+  Widget _buildOhosSandboxHint(Color textColor, Color textSub) {
+    return GlassCard(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.info_outline_rounded,
+                size: 16,
+                color: JXColors.primary,
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                '鸿蒙系统目录访问受限',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '当前仅能扫描应用沙盒内的音乐目录（如应用「我的音乐」）。'
+            '把音乐文件复制/移动到应用沙盒目录后重新扫描即可，'
+            '在线搜索、歌单播放不受影响。',
+            style: TextStyle(fontSize: 10.5, color: textSub, height: 1.5),
+          ),
         ],
       ),
     );
