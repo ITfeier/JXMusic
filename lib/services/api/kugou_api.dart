@@ -21,21 +21,24 @@ class KuGouApi implements MusicPlatformApi {
   static const String _playData = 'https://wwwapi.kugou.com/yy/index.php';
   static const String _songInfo = 'https://m.kugou.com/app/i/getSongInfo.php';
 
-  // ---- 酷狗官方扫码登录（Web 登录页 login-user.kugou.com 协议）----
-  // 2026-11-09 实扫定案（假设已验证）：
-  // · `v2/get_userinfo_qrcode` 到 status=4 时返回的 **token+userid 就是完整登录态**：
-  //   写入 Cookie 后，免费歌曲 `getSongInfo.php` 实测返回 status=1 + 可播 sharefs 直链；
-  // · 旧代码调用的 legacy `loginservice.kugou.com/v1/login_by_token_get` 已废弃/协议不符
-  //   （返回 20006），它是"登录态不完整"误报的来源 —— 已删除该调用；
-  // · v5/login_by_token、register_dev、user_info 等 Android 域接口对 web 型(1014)
-  //   token 均返回 20018/20006/20017（本机实测），说明这类数据需要 Android 型 token；
-  //   普通账号只要求"普通歌可播"，故保持 web 取码链路不变、不做增强调用。
+  // ---- 酷狗官方扫码登录（login-user.kugou.com 协议，Android 客户端型二维码）----
+  // 2026-11-19 对照 MakcRe/KuGouMusicApi main 定案：
+  // · 取码 /v2/qrcode 用 appid=1001（Android 客户端型二维码；1014 是 H5 网页型），
+  //   qrcode_txt 内嵌 appid=1005（酷狗音乐 Android 客户端），已实测返回同结构
+  //   data.qrcode + qrcode_img；
+  // · 轮询 /v2/get_userinfo_qrcode 用 appid=1005（config.json）、clientver=20489、
+  //   srcappid=2919 → status=4 返回的 token 是 **Android 型（1005）token**；
+  // · 旧 H5（1014）token 被 cloudlist get_all_list 以 error_code=20017 拒绝
+  //   （真机实测，账号歌单页「登录已过期」的根因；v5/login_by_token 等 Android 域
+  //   接口同样返回 20018/20006/20017）；
+  // · status=4 的 token+userid 就是完整登录态：写入 Cookie 后免费歌曲
+  //   getSongInfo.php 实测返回 status=1 + 可播 sharefs 直链；
+  // · 设备 mid（十进制）首次生成后以 kg_mid 存进会话 cookie，登录与账号歌单
+  //   请求共用，保持设备身份一致。
   static const String _loginBase = 'https://login-user.kugou.com/';
   static const String _qrcodeH5 =
       'https://h5.kugou.com/apps/loginQRCode/html/index.html';
   static const String _kgSalt = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
-  // Web 登录固定 clientver=8131、plat=4；dfid 无 cookie 时官方 JS 用 '-'
-  static const String _clientVer = '8131';
   static const String _dfid = '-';
   static const String _loginReferer =
       'https://login-user.kugou.com/login/?appid=1014';
@@ -48,6 +51,13 @@ class KuGouApi implements MusicPlatformApi {
 
   /// 最近一次扫码操作失败原因（成功/等待时为 null，供设置页展示准确提示）
   String? _lastError;
+
+  /// 最近一次扫码轮询是否为终态（status=0 二维码已过期，QA D-05）：
+  /// 终态再轮询无意义，设置页据此提前停止轮询（不必空转到 2 分钟）。
+  bool _qrTerminal = false;
+
+  @override
+  bool get qrTerminal => _qrTerminal;
 
   @override
   String? get lastError => _lastError;
@@ -151,8 +161,17 @@ class KuGouApi implements MusicPlatformApi {
       final resp = await JXHttp.dio.get(_songInfo,
           queryParameters: {'cmd': 'playInfo', 'hash': hash, 'platid': 4},
           options: auth);
-      final url = resp.data['url'] as String?;
-      if (url != null && url.isNotEmpty) return url;
+      final root = resp.data is Map ? resp.data as Map : const {};
+      final url = root['url'] as String?;
+      // 真机修复（+43）：统一升级 https，防设备端 libmpv 打开明文直链失败。
+      if (url != null && url.isNotEmpty) return jxUpgradeHttps(url);
+      // 付费/VIP 歌（实测 status=0 + error="需要付费"）：写明具体原因（QA #3），
+      // 死链提示展示「该歌曲可能需要会员或付费」而非笼统「链接已失效」。
+      final status = (root['status'] as num?)?.toInt();
+      final err = '${root['error'] ?? ''}'.trim();
+      if (status == 0 && err.isNotEmpty) {
+        _lastError = '酷狗：$err（该歌曲可能需要会员或付费）';
+      }
     } catch (_) {
       // 忽略，走兜底
     }
@@ -170,7 +189,7 @@ class KuGouApi implements MusicPlatformApi {
           options: auth);
       final url = resp.data['data']?['play_url'] as String?;
       if (url == null || url.isEmpty) return null;
-      return url;
+      return jxUpgradeHttps(url);
     } catch (_) {
       return null;
     }
@@ -264,21 +283,61 @@ class KuGouApi implements MusicPlatformApi {
   @override
   Future<List<Song>> playlistSongs(Playlist playlist,
       {int page = 1, int size = 100}) async {
-    // mobiles.kugou.com 的歌单详情接口，返回 data.info 歌曲数组
+    // mobiles.kugou.com 的歌单详情接口，返回 data.info 歌曲数组。
+    // 分页契约与 QQ 对齐（QA #5）：page=1 聚合整单（歌单详情页按全量展示/整单入队，
+    // 不能只有前 100 首），page>1 本地切片兑现分页。服务端单页上限约 100 条，
+    // 超过 100 首的歌单在 page=1 内部按 100 条/页翻页聚合（上限 10 页）。
     try {
-      final resp = await JXHttp.dio.get(
-        'https://mobiles.kugou.com/api/v3/special/song',
-        queryParameters: {
-          'specialid': playlist.id,
-          'page': page,
-          'pagesize': size,
-          'plat': 0,
-          'version': 8000,
-        },
-      );
-      final list = (resp.data['data']?['info'] as List?) ?? const [];
-      return list.map<Song>((s) {
-        final m = s as Map<String, dynamic>;
+      const perPage = 100;
+      // gcid 形态的歌单 id（m.kugou.com/songlist/gcid_XXX/ 分享链接里的全球集合
+      // ID，字母数字混合）不能直接查 special/song（实测返回「参数不合法」）：
+      // 先经 m.kugou.com 歌单页映射成数字 specialid（页面内嵌
+      // `"specialid":2509422`），2026-11 探针实测可用。
+      var specialId = playlist.id;
+      if (!RegExp(r'^\d+$').hasMatch(specialId)) {
+        final pageResp = await JXHttp.dio.get(
+          'https://m.kugou.com/songlist/gcid_$specialId/',
+          // 桌面 UA 会被 301 到 www.kugou.com，页面不内嵌 specialid 映射；
+          // 必须用移动浏览器 UA 才能拿到 m. 站映射页（2026-11 实测）。
+          options: Options(
+            responseType: ResponseType.plain,
+            headers: {'User-Agent': _mobileUa},
+          ),
+        );
+        final html = pageResp.data is String ? pageResp.data as String : '';
+        specialId =
+            RegExp(r'"specialid":(\d+)').firstMatch(html)?.group(1) ?? '';
+        if (specialId.isEmpty) return const [];
+      }
+      final all = <Map<String, dynamic>>[];
+      String? firstKey;
+      for (var p = 1; p <= 10; p++) {
+        final resp = await JXHttp.dio.get(
+          'https://mobiles.kugou.com/api/v3/special/song',
+          queryParameters: {
+            'specialid': specialId,
+            'page': p,
+            'pagesize': perPage,
+            'plat': 0,
+            'version': 8000,
+          },
+        );
+        final list = (resp.data['data']?['info'] as List?) ?? const [];
+        if (list.isEmpty) break;
+        final maps = list.map((s) => s as Map<String, dynamic>).toList();
+        // 接口忽略 page 参数时会一直返回第一页：首元素 hash 与上页相同即停，
+        // 避免同一页被堆叠（最多 10 页重复数据）。
+        final key = '${maps.first['hash'] ?? ''}';
+        if (firstKey != null && key == firstKey) break;
+        firstKey ??= key;
+        all.addAll(maps);
+        if (maps.length < perPage) break;
+      }
+      var sliced = all;
+      if (page > 1) {
+        sliced = all.skip((page - 1) * size).take(size).toList();
+      }
+      return sliced.map<Song>((m) {
         final filename = _clean(m['filename'] as String?);
         final cover = (m['trans_param'] as Map?)?['union_cover'] as String?;
         return Song(
@@ -294,6 +353,46 @@ class KuGouApi implements MusicPlatformApi {
       }).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// 歌单元数据：仅 gcid 形态支持——m.kugou.com 歌单页内嵌 `listinfo`
+  /// JSON（name/pic/count/list_create_username/specialid，2026-11 探针
+  /// 实测）。数字 specialid 无公开元数据接口（plist/info 已失效），返回
+  /// null 走手填名称兜底。
+  @override
+  Future<Playlist?> playlistInfo(Playlist playlist) async {
+    if (RegExp(r'^\d+$').hasMatch(playlist.id)) return null;
+    try {
+      final pageResp = await JXHttp.dio.get(
+        'https://m.kugou.com/songlist/gcid_${playlist.id}/',
+        options: Options(
+          responseType: ResponseType.plain,
+          headers: {'User-Agent': _mobileUa},
+        ),
+      );
+      final html = pageResp.data is String ? pageResp.data as String : '';
+      // listinfo 紧邻 "songs":[ 之前；内部无该锚点序列，lazy 匹配安全
+      final raw = RegExp(r'"listinfo":(\{.+?\}),"songs":\[')
+              .firstMatch(html)
+              ?.group(1) ??
+          '';
+      if (raw.isEmpty) return null;
+      final info = jsonDecode(raw);
+      if (info is! Map) return null;
+      final title = _clean(info['name'] as String?);
+      final cover = _image(info['pic'] as String?);
+      if (title.isEmpty && cover.isEmpty) return null;
+      return Playlist(
+        id: playlist.id,
+        platform: platform,
+        title: title,
+        coverUrl: cover,
+        creator: _clean(info['list_create_username'] as String?),
+        songCount: (info['count'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -346,6 +445,12 @@ class KuGouApi implements MusicPlatformApi {
   static const String _gatewayUa =
       'Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi';
 
+  /// 移动浏览器 UA：请求 m.kugou.com 页面必须带（桌面 UA 被 301 到
+  /// www.kugou.com，页面不内嵌歌单数据，2026-11 实测）。
+  static const String _mobileUa =
+      'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
   /// gateway android 签名 GET（分类搜索 /v1/search/*、歌手歌曲等）
   Future<Map?> _gatewaySignedGet(String path, Map<String, String> params,
       {Map<String, String> headers = const {}}) async {
@@ -370,18 +475,21 @@ class KuGouApi implements MusicPlatformApi {
     return resp.data is Map ? resp.data as Map : null;
   }
 
-  /// gateway android 签名 POST（专辑歌曲 /v1/album_audio/lite 等）
+  /// gateway android 签名 POST（专辑歌曲 /v1/album_audio/lite、账号歌单
+  /// /v7/get_all_list 等）。[mid] 缺省时用匿名搜索 mid；登录态相关请求
+  /// 必须传会话持久化的 kg_mid（与登录时一致，否则网关按异常设备拒绝）。
   Future<Map?> _gatewaySignedPost(
       String path, Map<String, dynamic> body, String router,
       {Map<String, String> headers = const {},
-      Map<String, String> query = const {}}) async {
+      Map<String, String> query = const {},
+      String? mid}) async {
     final clienttime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final mid = _searchMid ??= _randomSearchMid();
+    final useMid = mid ?? (_searchMid ??= _randomSearchMid());
     final bodyStr = jsonEncode(body);
     final params = <String, String>{
       ...query,
       'dfid': _dfid,
-      'mid': mid,
+      'mid': useMid,
       'uuid': '-',
       'appid': KugouLoginCrypto.appid,
       'clientver': KugouLoginCrypto.clientver,
@@ -535,6 +643,9 @@ class KuGouApi implements MusicPlatformApi {
         'cloudlist.service.kugou.com',
         query: {'plat': '1', 'userid': userid, 'token': token},
         headers: {'Cookie': _cookieStr},
+        // 设备 mid 与登录时保持一致（kg_mid 随会话持久化）：
+        // 20017 的一部分诱因是网关按 mid/dfid 校验设备身份。
+        mid: _cookies['kg_mid'],
       );
       if (_probe && root != null) {
         // ignore: avoid_print
@@ -671,14 +782,15 @@ class KuGouApi implements MusicPlatformApi {
     }
   }
 
-  // ---- 扫码登录（Web 登录页 login-user.kugou.com 协议）----
-  // 2026-11-09 实扫定案（假设已本机验证）：
-  // · status=4 返回的 token+userid **就是完整登录态**：写入 Cookie 后免费歌曲
-  //   getSongInfo 实测返回 status=1 + 可播 sharefs 直链；
-  // · legacy `login_by_token_get` 已废弃（20006），是"登录态不完整"误报来源 → 删除；
-  // · v5/login_by_token、register_dev、user_info 对 web 型(1014) token 返回
-  //   20018/20006/20017（本机实测），这类数据需要 Android 型 token；
-  //   普通账号只要求普通歌可播，故保持 web 取码链路不变、不做增强调用。
+  // ---- 扫码登录（login-user.kugou.com 协议，Android 客户端型二维码）----
+  // 2026-11-19 对照 MakcRe/KuGouMusicApi main 定案：
+  // · 取码 appid=1001、轮询 appid=1005/clientver=20489/srcappid=2919，
+  //   status=4 返回的 token 是 Android 型（1005）token——cloudlist
+  //   get_all_list 认它；旧 H5（1014）token 被拒 20017（真机实测，
+  //   账号歌单「登录已过期」的根因）；
+  // · token+userid 就是完整登录态：写入 Cookie 后免费歌 getSongInfo
+  //   实测返回 status=1 + 可播 sharefs 直链；
+  // · 设备 mid 以 kg_mid 随会话持久化，登录与账号歌单共用。
   @override
   void restoreSession(AccountSession? session) {
     _cookies.clear();
@@ -690,20 +802,26 @@ class KuGouApi implements MusicPlatformApi {
   @override
   Future<({String qrUrl, String key})> createQrLogin() async {
     _qrKey = null;
-    _kgMid = _randomHex32();
+    // 设备 mid：复用会话里持久化的 kg_mid（跨登录稳定），否则新生成十进制 mid
+    _kgMid = _cookies['kg_mid'] ?? _randomMidDecimal();
     _lastError = null;
+    _qrTerminal = false;
     try {
       // GET https://login-user.kugou.com/v2/qrcode?<签名参数>
+      // appid=1001（Android 客户端型二维码，对照 login_qr_key.js 默认分支）：
+      // 扫码确认后拿到 Android 型（1005）token，账号歌单 cloudlist 才认
+      // （H5 型 1014 二维码的 token 被 get_all_list 拒 20017，真机实测）。
       final params = <String, String>{
-        'appid': '1014',
-        'clientver': _clientVer,
-        'clienttime': '${DateTime.now().millisecondsSinceEpoch}',
+        'appid': '1001',
+        'clientver': KugouLoginCrypto.clientver,
+        'clienttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
         'mid': _kgMid!,
-        'uuid': _kgMid!,
+        'uuid': '-',
         'dfid': _dfid,
         'type': '1',
         'plat': '4',
-        'qrcode_txt': '$_qrcodeH5?appid=1014&',
+        'srcappid': '2919',
+        'qrcode_txt': '$_qrcodeH5?appid=${KugouLoginCrypto.appid}&',
       };
       final resp = await JXHttp.dio.get(
         '${_loginBase}v2/qrcode',
@@ -719,8 +837,9 @@ class KuGouApi implements MusicPlatformApi {
       _qrKey = key;
       // 官方同时返回 data.qrcode_img（data:image/png;base64,...）；缺失时退化为 H5 URL
       final img = data is Map ? '${data['qrcode_img'] ?? ''}' : '';
-      final qrUrl =
-          img.isNotEmpty ? img : '$_qrcodeH5?appid=1014&qrcode=$key';
+      final qrUrl = img.isNotEmpty
+          ? img
+          : '$_qrcodeH5?appid=${KugouLoginCrypto.appid}&qrcode=$key';
       _lastError = null;
       return (qrUrl: qrUrl, key: key);
     } catch (e) {
@@ -745,15 +864,18 @@ class KuGouApi implements MusicPlatformApi {
     try {
       // GET https://login-user.kugou.com/v2/get_userinfo_qrcode?<签名参数>
       // data.status：0 过期 / 1 等待 / 2 已扫码待确认 / 4 登录成功
-      final mid = _kgMid ?? _randomHex32();
+      // appid=1005（对照 login_qr_check.js）：与取码 appid=1001 配对，
+      // 返回 Android 型（1005）token
+      final mid = _kgMid ?? _randomMidDecimal();
       final params = <String, String>{
-        'appid': '1014',
-        'clientver': _clientVer,
-        'clienttime': '${DateTime.now().millisecondsSinceEpoch}',
+        'appid': KugouLoginCrypto.appid,
+        'clientver': KugouLoginCrypto.clientver,
+        'clienttime': '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
         'mid': mid,
-        'uuid': mid,
+        'uuid': '-',
         'dfid': _dfid,
         'plat': '4',
+        'srcappid': '2919',
         'qrcode': key,
       };
       final resp = await JXHttp.dio.get(
@@ -779,14 +901,17 @@ class KuGouApi implements MusicPlatformApi {
       final status = (data['status'] as num?)?.toInt() ?? 0;
       if (status == 2) {
         _lastError = null; // 已扫码待确认
+        _qrTerminal = false;
         return null;
       }
       if (status == 0) {
         _lastError = '二维码已过期，请关闭后重新获取';
+        _qrTerminal = true; // QA D-05：过期终态，设置页提前停止轮询
         return null;
       }
       if (status != 4) {
         _lastError = null; // 其余按等待处理
+        _qrTerminal = false;
         return null;
       }
       // status=4：token+userid 就是完整登录态（本机实测可正常取免费歌直链）
@@ -798,6 +923,8 @@ class KuGouApi implements MusicPlatformApi {
       }
       _cookies['userid'] = userid;
       _cookies['token'] = token;
+      // 持久化设备 mid：账号歌单（get_all_list）等后续请求与登录共用设备身份
+      _cookies['kg_mid'] = mid;
       var nickname = '${data['nickname'] ?? ''}'.trim();
       if (nickname.isEmpty) nickname = (_cookies['nickname'] ?? '').trim();
       final pic = '${data['pic'] ?? data['headimg'] ?? ''}';
@@ -854,7 +981,7 @@ class KuGouApi implements MusicPlatformApi {
       _lastError = '请输入酷狗账号和密码';
       return null;
     }
-    final mid = _pwdMid ??= _randomMidDecimal();
+    final mid = _pwdMid ??= _cookies['kg_mid'] ?? _randomMidDecimal();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final clienttime = nowMs ~/ 1000;
     final tempKey = KugouLoginCrypto.randomTempKey();
@@ -966,6 +1093,8 @@ class KuGouApi implements MusicPlatformApi {
         return null;
       }
       _cookies['token'] = token;
+      // 持久化设备 mid（kg_mid），账号歌单等请求与登录共用设备身份
+      _cookies['kg_mid'] = mid;
       // 解密对象里的其余会话键值逐个写入 cookie（login.js 同款行为）
       tokenMap?.forEach((k, v) {
         final value = '$v';
@@ -1017,7 +1146,7 @@ class KuGouApi implements MusicPlatformApi {
       _lastError = '请输入手机号';
       return false;
     }
-    final mid = _pwdMid ??= _randomMidDecimal();
+    final mid = _pwdMid ??= _cookies['kg_mid'] ?? _randomMidDecimal();
     final clienttime = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     // 键序与 captcha_sent.js 一致（影响 android 签名）
     final body = jsonEncode(<String, dynamic>{
@@ -1082,7 +1211,7 @@ class KuGouApi implements MusicPlatformApi {
       _lastError = '请输入手机号和验证码';
       return null;
     }
-    final mid = _pwdMid ??= _randomMidDecimal();
+    final mid = _pwdMid ??= _cookies['kg_mid'] ?? _randomMidDecimal();
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     final clienttime = nowMs ~/ 1000;
     final tempKey = KugouLoginCrypto.randomTempKey();
@@ -1189,6 +1318,8 @@ class KuGouApi implements MusicPlatformApi {
         return null;
       }
       _cookies['token'] = token;
+      // 持久化设备 mid（kg_mid），账号歌单等请求与登录共用设备身份
+      _cookies['kg_mid'] = mid;
       tokenMap?.forEach((k, v) {
         final value = '$v';
         if (value.isEmpty || k == 'clienttime_ms') return;

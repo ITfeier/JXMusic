@@ -16,12 +16,12 @@ import 'package:jxmusic/ui/local_page.dart';
 /// 本地音乐页 widget 测试（PRD REQ-1/REQ-6/REQ-7，评审 R-7/R-16/R-17）：
 /// - 空态文案；
 /// - 加密标签（网易云/QQ/酷狗、需解密、kgg「暂不支持」）；
-/// - 目录管理弹层增删渲染、解密缓存占用；
 /// - 「播放全部」/点击加密歌曲的播放回调（注入 fake，不依赖 providers/playback）；
 /// - 加密歌曲解密成功后回填标题并刷新列表；
 /// - Android 未授权横幅 + 去授权后刷新。
 ///
 /// 全部通过构造函数注入 fake 服务，不碰真实 Hive/文件系统/权限插件。
+/// 「扫描目录」入口已移除：扫描由打开页面时的 autoScan 自动触发。
 void main() {
   Future<void> pumpLocalPage(WidgetTester tester, LocalPage page) async {
     tester.view.physicalSize = const Size(1080, 1920);
@@ -35,20 +35,9 @@ void main() {
         home: Scaffold(body: page),
       ),
     );
-    // 初始化是异步的（读目录配置），有限次 pump 等待完成
+    // 初始化是异步的（读目录配置 + autoScan 扫描），有限次 pump 等待完成
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 30));
-  }
-
-  Future<void> openDirectorySheet(WidgetTester tester) async {
-    await tester.tap(find.text('扫描目录'));
-    await tester.pumpAndSettle();
-    expect(find.text('音乐目录管理'), findsOneWidget);
-  }
-
-  Future<void> startScan(WidgetTester tester) async {
-    await tester.tap(find.text('开始扫描'));
-    await tester.pumpAndSettle();
   }
 
   _FakeFormatService fakeFormat() => _FakeFormatService();
@@ -105,7 +94,7 @@ void main() {
       musicService: _FakeMusicService(songs: songs),
       formatService: fakeFormat(),
       pathsStore: _FakePathsStore(<String>[p.join('D:', 'Music')]),
-      autoScan: false,
+      autoScan: true,
       androidOverride: false,
       playQueue: (queue, index) {
         playedQueue = queue;
@@ -114,9 +103,8 @@ void main() {
     );
 
     await pumpLocalPage(tester, page);
-    await openDirectorySheet(tester);
-    expect(find.textContaining('解密缓存'), findsOneWidget);
-    await startScan(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('扫描目录'), findsNothing, reason: '「扫描目录」按钮已移除');
 
     expect(find.textContaining('网易云加密 · 需解密'), findsOneWidget);
     expect(find.textContaining('酷狗加密 · 暂不支持'), findsOneWidget);
@@ -134,46 +122,6 @@ void main() {
       mp3Path,
       reason: '播放回调必须传原始列表与原始索引（audioUrl 保留源路径）',
     );
-  });
-
-  testWidgets('目录管理弹层：已配置目录可删除、可手动输入新增', (tester) async {
-    final firstPath = p.join('D:', 'Music');
-    final secondPath = p.join('D:', 'Download');
-    final newPath = p.join('D:', 'NewMusic');
-    final store = _FakePathsStore(<String>[firstPath, secondPath]);
-    final page = LocalPage(
-      musicService: _FakeMusicService(songs: const <Song>[]),
-      formatService: fakeFormat(),
-      pathsStore: store,
-      autoScan: false,
-      androidOverride: false,
-    );
-
-    await pumpLocalPage(tester, page);
-    await openDirectorySheet(tester);
-
-    expect(find.text(firstPath), findsOneWidget);
-    expect(find.text(secondPath), findsOneWidget);
-    expect(find.byIcon(Icons.delete_outline_rounded), findsNWidgets(2));
-
-    // 删除第一个目录
-    await tester.tap(find.byIcon(Icons.delete_outline_rounded).first);
-    await tester.pumpAndSettle();
-    expect(find.text(firstPath), findsNothing);
-    expect(find.text(secondPath), findsOneWidget);
-    expect(store.loaded, isNot(contains(firstPath)));
-
-    // 手动输入新增目录
-    await tester.tap(find.text('手动输入'));
-    await tester.pumpAndSettle();
-    expect(find.text('手动输入目录'), findsOneWidget);
-    await tester.enterText(find.byType(TextField), newPath);
-    await tester.pump();
-    await tester.tap(find.text('添加'));
-    await tester.pumpAndSettle();
-    expect(find.text(newPath), findsOneWidget);
-    expect(store.loaded, contains(newPath));
-    expect(tester.takeException(), isNull);
   });
 
   testWidgets('点击加密歌曲：先解密（带进度）成功后回填标签并刷新列表，再回调播放', (tester) async {
@@ -194,7 +142,7 @@ void main() {
       musicService: music,
       formatService: format,
       pathsStore: _FakePathsStore(<String>[p.join('D:', 'Music')]),
-      autoScan: false,
+      autoScan: true,
       androidOverride: false,
       playQueue: (queue, index) {
         playedQueue = queue;
@@ -203,8 +151,7 @@ void main() {
     );
 
     await pumpLocalPage(tester, page);
-    await openDirectorySheet(tester);
-    await startScan(tester);
+    await tester.pumpAndSettle();
 
     await tester.tap(find.text('加密歌'));
     await tester.pumpAndSettle();
@@ -240,13 +187,12 @@ void main() {
       ),
       formatService: format,
       pathsStore: _FakePathsStore(<String>[p.join('D:', 'Music')]),
-      autoScan: false,
+      autoScan: true,
       androidOverride: false,
     );
 
     await pumpLocalPage(tester, page);
-    await openDirectorySheet(tester);
-    await startScan(tester);
+    await tester.pumpAndSettle();
 
     expect(find.textContaining('暂不支持'), findsOneWidget);
     await tester.tap(find.text('无解'));
@@ -296,8 +242,6 @@ class _FakePathsStore extends LocalPathsStore {
   _FakePathsStore(List<String> initial) : _paths = List<String>.of(initial);
 
   List<String> _paths;
-
-  List<String> get loaded => List<String>.unmodifiable(_paths);
 
   @override
   Future<List<String>> load() async => List<String>.of(_paths);

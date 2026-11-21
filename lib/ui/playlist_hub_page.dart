@@ -9,7 +9,10 @@ import 'playlist_row.dart';
 ///
 /// 首页聚合推荐歌单区块右上「更多」进入：顶部平台 pill（QQ音乐 / 网易云 /
 /// 酷狗）切换，内容区 [IndexedStack] 同时持有三个平台的 [PlaylistListPage]
-/// （各自独立分页加载，切换不丢状态），内嵌时隐藏其返回按钮。
+/// （各自独立分页加载，切换不丢状态），内嵌时隐藏其返回/刷新按钮。
+///
+/// 头部「更新」按钮：一次点击同时刷新全部三平台子页（各自随机起始页、
+/// 并行请求），满足「所有歌单同步更新、同时更新、随机更新」。
 class PlaylistHubPage extends StatefulWidget {
   final int initialPlatform;
 
@@ -29,6 +32,18 @@ class _PlaylistHubPageState extends State<PlaylistHubPage> {
   late int _platform = _platforms.contains(widget.initialPlatform)
       ? widget.initialPlatform
       : JXPlatform.qq;
+
+  /// 各平台子页 key：头部「更新」按钮一次性触发全部子页刷新
+  final Map<int, GlobalKey<PlaylistListPageState>> _pageKeys = {
+    for (final p in _platforms) p: GlobalKey<PlaylistListPageState>(),
+  };
+
+  /// 「更新」：同时刷新全部三平台子页（各回顶 + 重新随机起始页，并行请求）。
+  void _refreshAll() {
+    for (final key in _pageKeys.values) {
+      key.currentState?.refresh();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -71,6 +86,12 @@ class _PlaylistHubPageState extends State<PlaylistHubPage> {
                             color: textColor),
                       ),
                     ),
+                    const SizedBox(width: 8),
+                    GlassIconButton(
+                      icon: Icons.refresh_rounded,
+                      size: 36,
+                      onPressed: _refreshAll,
+                    ),
                   ],
                 ),
               ),
@@ -97,7 +118,8 @@ class _PlaylistHubPageState extends State<PlaylistHubPage> {
                   index: _platforms.indexOf(_platform),
                   children: [
                     for (final p in _platforms)
-                      PlaylistListPage(platform: p, showBack: false),
+                      PlaylistListPage(
+                          key: _pageKeys[p], platform: p, showBack: false),
                   ],
                 ),
               ),

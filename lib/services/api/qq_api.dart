@@ -97,6 +97,13 @@ class QQMusicApi implements MusicPlatformApi {
 
   bool get qrScanConfirmed => _scanConfirmed;
 
+  bool _qrTerminal = false;
+
+  /// 最近一次扫码轮询是否为终态（65 二维码已过期，扫码修复 QA D-05）：
+  /// 终态再轮询无意义，设置页据此提前停止轮询（不必空转到 2 分钟）。
+  @override
+  bool get qrTerminal => _qrTerminal;
+
   @override
   String? get lastError => _lastError;
 
@@ -167,6 +174,14 @@ class QQMusicApi implements MusicPlatformApi {
     print('[JXMusic][QQ登录] $message');
   }
 
+  // ---- 播放直链诊断日志（+44：真机「QQ 歌单大量不可播/被提示需要登录」定位）----
+  // 真机 hilog 过滤「JXMusic][QQ播放」可看到每次解析的登录态与服务端返回，
+  // 用于区分：未带登录态 / 登录态过期（VIP 歌 purl 空）/ 版权无音源。
+  void _playLog(String message) {
+    // ignore: avoid_print
+    print('[JXMusic][QQ播放] $message');
+  }
+
   /// 打码：只保留前 [head] 后 [tail] 个字符；短值只输出长度
   static String _mask(String? value, {int head = 4, int tail = 4}) {
     if (value == null || value.isEmpty) return '(空)';
@@ -195,9 +210,12 @@ class QQMusicApi implements MusicPlatformApi {
   /// 无重定向 GET：check_sig / authorize 的 p_skey / code 在 302 的响应头里，
   /// 必须关掉自动跟随才能逐跳收集 Set-Cookie（Dio 自动跟随会丢中间 Set-Cookie）。
   Future<Response<dynamic>> _getRaw(String url,
-      {Map<String, dynamic>? query, Map<String, String>? headers}) {
+      {Map<String, dynamic>? query,
+      Map<String, String>? headers,
+      CancelToken? cancelToken}) {
     return JXHttp.dio.get(url,
         queryParameters: query,
+        cancelToken: cancelToken,
         options: Options(
           followRedirects: false,
           validateStatus: (s) => s != null && s < 500,
@@ -205,6 +223,11 @@ class QQMusicApi implements MusicPlatformApi {
           headers: {'Referer': 'https://xui.ptlogin2.qq.com/', ...?headers},
         ));
   }
+
+  /// 是否为 CancelToken 取消导致的请求异常（兑换超时主动取消底层请求，QA D-06）。
+  /// 取消不是「失败原因」，不能覆盖外层 .timeout 已写好的超时提示。
+  static bool _isCancelled(Object e) =>
+      e is DioException && CancelToken.isCancel(e);
 
   @override
   Future<List<Song>> searchSongs(String keyword,
@@ -272,8 +295,13 @@ class QQMusicApi implements MusicPlatformApi {
   @override
   Future<String?> getPlayUrl(Song song) async {
     if (_guid.isEmpty) _guid = _randomGuid;
+    final uinNum = _loginUin;
+    // +44 诊断：真机反馈「QQ 歌单大量不可播」时，先确认本次请求是否带了
+    // 登录态（区分：未登录 / 登录态过期 / 服务端确实无 purl）。
+    _playLog('getPlayUrl songmid=${song.id} vip=${song.vip} '
+        'uin=${uinNum.isEmpty ? '(未登录)' : _mask(uinNum)} '
+        'cookies=${_loginCookies.isEmpty ? '无' : _loginCookies.keys.join(',')}');
     try {
-      final uinNum = _loginUin;
       final req = {
         'req': {
           'module': 'CDN.SrfCdnMusicSvr',
@@ -312,20 +340,137 @@ class QQMusicApi implements MusicPlatformApi {
             'Referer': 'https://y.qq.com/',
           }));
       final data = resp.data;
+      final root = data is Map ? data : const {};
+      // 节目/电台类内容（104003）：QA #6，写明具体原因供死链提示展示，
+      // 不再静默 return null 走笼统「链接已失效」。
+      final req0Code = '${root['req_0']?['code'] ?? ''}';
+      final reqCode = '${root['req']?['code'] ?? ''}';
+      if (req0Code == '104003' || reqCode == '104003') {
+        _lastError = '该内容为节目/电台类，暂不支持播放（QQ音乐）';
+        return null;
+      }
       final urls = data['req_0']?['data']?['midurlinfo'] as List?;
-      if (urls == null || urls.isEmpty) return null;
+      if (urls == null || urls.isEmpty) {
+        // +44 诊断：midurlinfo 整体缺失，记录服务端 code 便于真机 hilog 定位。
+        _playLog('midurlinfo 为空 songmid=${song.id} '
+            'req_0.code=$req0Code req.code=$reqCode');
+        return null;
+      }
       final u = urls.first as Map<String, dynamic>;
       final purl = u['purl'] as String?;
-      if (purl == null || purl.isEmpty) return null;
+      if (purl == null || purl.isEmpty) {
+        // 播放失败诊断 P1（文案化，+43）：purl 为空多见于 VIP/付费歌曲无
+        // 权益或无版权内容。+44 细分：带了登录态仍拿不到 VIP 直链，多半是
+        // 登录态（musickey）已过期——提示重新登录，而不是误导「先去登录」。
+        _playLog('purl 为空 songmid=${song.id} vip=${song.vip} '
+            'req_0.code=$req0Code 已带登录态=${_loginCookies.isNotEmpty}');
+        if (_loginCookies.isNotEmpty && song.vip) {
+          _lastError = '暂无可用音源（VIP/付费歌曲或版权受限；'
+              '若长时间未登录请尝试重新登录，QQ音乐）';
+        } else if (_loginCookies.isNotEmpty) {
+          _lastError = '暂无可用音源（版权受限，QQ音乐）';
+        } else {
+          _lastError = '暂无可用音源（VIP/付费歌曲或版权受限，QQ音乐）';
+        }
+        // +46 官方试听版兜底：完整版无权益（未登录/权益过期/无版权直链）时，
+        // 改请求 QQ 官方 60 秒试听文件（RS02 前缀，与官方 web 播放器对
+        // 未购用户提供的试听同口径；2026-11 探针实测匿名可下：VIP（晴天）
+        // 与付费数字专辑（最伟大的作品）均返回 960887 字节 mp3 ≈ 60s）。
+        // 完整版仍需会员/购买，不绕过任何付费限制。
+        final trial = await _resolveTrialUrl(song, uinNum);
+        if (trial != null) return trial;
+        return null;
+      }
+      _playLog('解析成功 songmid=${song.id} purl.len=${purl.length}');
       // 实测 sip 位于 req_0.data.sip（CgiGetVkey 返回），req.data.sip 仅为兜底
       var sipList = data['req_0']?['data']?['sip'];
       sipList ??= data['req']?['data']?['sip'];
       final prefix = (sipList is List && sipList.isNotEmpty)
           ? sipList.first as String?
           : null;
-      if (prefix == null || prefix.isEmpty) return purl;
-      return '$prefix$purl';
-    } catch (_) {
+      if (prefix == null || prefix.isEmpty) return jxUpgradeHttps(purl);
+      // 真机修复（+43）：sip 前缀拼接出的多为 http:// 明文直链
+      // （aqqmusic.tc.qq.com），设备端 libmpv 打开失败，统一升级 https
+      // （2026-11 实测同文件 https 200 可播）。
+      return jxUpgradeHttps('$prefix$purl');
+    } catch (e) {
+      // +44 诊断：网络/解析异常不再完全静默，真机 hilog 可见具体异常。
+      _playLog('解析异常 songmid=${song.id} $e');
+      return null;
+    }
+  }
+
+  /// 官方试听版请求体（+46）：与主路径同一 musicu 接口，唯一差异是
+  /// CgiGetVkey 显式带 `filename: ['RS02{songmid}.mp3']`——RS02 是 QQ
+  /// 官方试听文件前缀，带了它服务端按试听文件签发 vkey（无权益也放行）。
+  static Map<String, dynamic> trialUrlRequest(
+      String guid, String songmid, String uin) {
+    return {
+      'req': {
+        'module': 'CDN.SrfCdnMusicSvr',
+        'method': 'GetCdnDispatch',
+        'param': {'guid': guid, 'songmid': songmid, 'songtype': 1},
+      },
+      'req_0': {
+        'module': 'vkey.GetVkeyServer',
+        'method': 'CgiGetVkey',
+        'param': {
+          'guid': guid,
+          'songmid': [songmid],
+          'songtype': [1],
+          'uin': uin,
+          'loginflag': 1,
+          'platform': '20',
+          'filename': ['RS02$songmid.mp3'],
+        },
+      },
+    };
+  }
+
+  /// 从试听响应提取完整试听直链（sip[0] + purl，统一升 https）。
+  /// 无试听（purl 空/midurlinfo 缺失/结构异常）返回 null。
+  static String? trialUrlFromResponse(Object? data) {
+    final root = data is Map ? data : const {};
+    final req0 = root['req_0'];
+    final d = req0 is Map ? req0['data'] : null;
+    final midurlinfo = d is Map ? d['midurlinfo'] : null;
+    final sipList = d is Map ? d['sip'] : null;
+    if (midurlinfo is! List || midurlinfo.isEmpty) return null;
+    final first = midurlinfo.first;
+    if (first is! Map) return null;
+    final purl = first['purl'] as String?;
+    if (purl == null || purl.isEmpty) return null;
+    var prefix = '';
+    if (sipList is List && sipList.isNotEmpty && sipList.first is String) {
+      prefix = sipList.first as String;
+    }
+    // 真机修复口径与主路径一致（+43）：sip 拼出的多为 http:// 明文直链，
+    // 设备端 libmpv 打开失败，统一升级 https。
+    return jxUpgradeHttps('$prefix$purl');
+  }
+
+  /// +46 官方试听版解析：请求失败/无试听均返回 null（由调用方维持原有
+  /// lastError 提示），成功返回可直接播放的试听直链。
+  Future<String?> _resolveTrialUrl(Song song, String uinNum) async {
+    try {
+      final resp = await JXHttp.dio.get(_musicu,
+          queryParameters: {
+            'format': 'json',
+            'data': jsonEncode(trialUrlRequest(_guid, song.id, uinNum)),
+            'loginUin': uinNum,
+            'hostUin': uinNum,
+            'needNewCode': 0,
+          },
+          options: Options(headers: {
+            if (_loginCookies.isNotEmpty) 'Cookie': _cookieStr(_loginCookies),
+            'Referer': 'https://y.qq.com/',
+          }));
+      final url = trialUrlFromResponse(resp.data);
+      _playLog('试听版解析 songmid=${song.id} '
+          '${url == null ? '无试听' : 'OK len=${url.length}'}');
+      return url;
+    } catch (e) {
+      _playLog('试听版解析异常 songmid=${song.id} $e');
       return null;
     }
   }
@@ -491,6 +636,40 @@ class QQMusicApi implements MusicPlatformApi {
       }).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// 歌单元数据：uniform_get_Dissinfo 的 dirinfo（2026-11 探针实测）：
+  /// `data.dirinfo.title`（名称）、`data.dirinfo.picurl`（封面）、
+  /// `data.total_song_num`（曲目数）。
+  @override
+  Future<Playlist?> playlistInfo(Playlist playlist) async {
+    try {
+      final req = {
+        'comm': {'ct': 24, 'cv': 0},
+        'playlist': {
+          'module': 'music.srfDissInfo.aiDissInfo',
+          'method': 'uniform_get_Dissinfo',
+          'param': {'disstid': int.tryParse(playlist.id) ?? 0, 'userinfo': 1}
+        }
+      };
+      final resp = await JXHttp.dio.get(_musicu,
+          queryParameters: {'format': 'json', 'data': jsonEncode(req)},
+          options: Options(headers: {'Referer': 'https://y.qq.com/'}));
+      final data = resp.data['playlist']?['data'];
+      final dirinfo = data is Map ? data['dirinfo'] : null;
+      if (dirinfo is! Map) return null;
+      return Playlist(
+        id: playlist.id,
+        platform: platform,
+        title: '${dirinfo['title'] ?? ''}',
+        coverUrl: jxNormalizeImageUrl('${dirinfo['picurl'] ?? ''}'),
+        songCount:
+            (data is Map ? data['total_song_num'] as num? : null)?.toInt() ??
+                0,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -788,10 +967,16 @@ class QQMusicApi implements MusicPlatformApi {
       id: '${m['tid'] ?? m['dissid'] ?? m['id'] ?? ''}',
       platform: platform,
       title:
-          '${m['dissname'] ?? m['title'] ?? m['name'] ?? m['dirName'] ?? ''}',
-      coverUrl: '${m['picurl'] ?? m['logo'] ?? m['cover'] ?? ''}',
+          '${m['dissname'] ?? m['dirName'] ?? m['title'] ?? m['name'] ?? ''}',
+      // 2026-11 探针实测：GetPlaylistByUin 的 v_playlist 用驼峰 picUrl/bigpicUrl
+      // （部分是 http://，必须过 jxNormalizeImageUrl 升 https，否则移动端明文
+      // 被禁加载不出）；收藏列表 v_list 旧形态 picurl/logo/cover 一并兜住。
+      coverUrl: jxNormalizeImageUrl(
+          '${m['picUrl'] ?? m['bigpicUrl'] ?? m['picurl'] ?? m['logo'] ?? m['cover'] ?? ''}'),
       creator: '${m['nickname'] ?? m['nick'] ?? ''}',
-      songCount: (m['songnum'] as num?)?.toInt() ??
+      // v_playlist 是驼峰 songNum，v_list 是 songnum/song_cnt，都兜住
+      songCount: (m['songNum'] as num?)?.toInt() ??
+          (m['songnum'] as num?)?.toInt() ??
           (m['song_cnt'] as num?)?.toInt() ??
           0,
     );
@@ -861,6 +1046,7 @@ class QQMusicApi implements MusicPlatformApi {
     _ptCookies.clear();
     _qrsig = null;
     _scanConfirmed = false;
+    _qrTerminal = false;
     _lastError = null;
     try {
       final resp = await JXHttp.dio.get(_ptqrshow,
@@ -982,11 +1168,13 @@ class QQMusicApi implements MusicPlatformApi {
       if (code == '66' || code == '67') {
         _log('轮询 code=$code（等待扫码/待确认）');
         _lastError = null; // 等待扫码 / 待确认，属正常状态
+        _qrTerminal = false;
         return null;
       }
       if (code == '65') {
         _log('轮询 code=65（二维码已过期）');
         _lastError = '二维码已过期，请关闭后重新获取';
+        _qrTerminal = true; // QA D-05：过期终态，设置页提前停止轮询
         return null;
       }
       if (code == '7') {
@@ -1029,9 +1217,15 @@ class QQMusicApi implements MusicPlatformApi {
       }
 
       _lastError = null;
-      final data = await _exchangeLogin(uin, sigx, jumpUrl).timeout(
+      // QA D-06：超时必须取消底层请求，否则一次性 code 可能被晚到的响应消费、
+      // 或迟到的失败覆盖超时提示。
+      final exchangeCancel = CancelToken();
+      final data = await _exchangeLogin(uin, sigx, jumpUrl,
+              cancelToken: exchangeCancel)
+          .timeout(
         _exchangeTimeout,
         onTimeout: () {
+          exchangeCancel.cancel();
           _lastError =
               'QQ 扫码已确认，但兑换登录态超时（>${_exchangeTimeout.inSeconds} 秒）';
           _log(_lastError!);
@@ -1153,6 +1347,7 @@ class QQMusicApi implements MusicPlatformApi {
     required Map<String, String> jar,
     required String tag,
     bool sendJar = true,
+    CancelToken? cancelToken,
   }) async {
     final summary = <String>[];
     final rawUrl =
@@ -1160,7 +1355,8 @@ class QQMusicApi implements MusicPlatformApi {
     _log('$tag 请求: ${_maskUrl(rawUrl)} len=${rawUrl.length}');
     var current = await _getRaw(url,
         query: query,
-        headers: {if (sendJar && jar.isNotEmpty) 'Cookie': _cookieStr(jar)});
+        headers: {if (sendJar && jar.isNotEmpty) 'Cookie': _cookieStr(jar)},
+        cancelToken: cancelToken);
     var status = current.statusCode ?? 0;
     var location = _headerValue(current.headers, 'location');
     final firstLocation = location;
@@ -1218,8 +1414,9 @@ class QQMusicApi implements MusicPlatformApi {
   ///   （值一律打码）；
   /// - authorize 先 POST，取不到 code 时无条件降级 GET；
   /// - QQLogin 记录外层/业务 code，业务成功才返回 data。
-  Future<Map<String, dynamic>?> _exchangeLogin(
-      String uin, String ptsigx, String ptuiJumpUrl) async {
+  Future<Map<String, dynamic>?> _exchangeLogin(String uin, String ptsigx,
+      String ptuiJumpUrl,
+      {CancelToken? cancelToken}) async {
     try {
       final ptCookies = <String, String>{};
       final steps = <String>[];
@@ -1236,10 +1433,15 @@ class QQMusicApi implements MusicPlatformApi {
           jar: ptCookies,
           tag: 'check_sig#1(无Cookie)',
           sendJar: false,
+          cancelToken: cancelToken,
         );
         steps.add(attempt.summary);
         chainStart = attempt.location;
       } catch (e) {
+        if (_isCancelled(e)) {
+          _log('check_sig#1 已取消（兑换超时）');
+          return null;
+        }
         steps.add('check_sig#1 异常 ${_describeError(e, '')}');
         _log('check_sig#1 异常：${_describeError(e, '')}');
       }
@@ -1256,10 +1458,15 @@ class QQMusicApi implements MusicPlatformApi {
               query: _checkSigParams(uin, ptsigx),
               jar: ptCookies,
               tag: 'check_sig#2(带qrsig)',
+              cancelToken: cancelToken,
             );
             steps.add(attempt.summary);
             if (chainStart.isEmpty) chainStart = attempt.location;
           } catch (e) {
+            if (_isCancelled(e)) {
+              _log('check_sig#2 已取消（兑换超时）');
+              return null;
+            }
             steps.add('check_sig#2 异常 ${_describeError(e, '')}');
           }
           gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
@@ -1273,10 +1480,17 @@ class QQMusicApi implements MusicPlatformApi {
         if (jump.isNotEmpty && uri != null && uri.path.endsWith('check_sig')) {
           try {
             final attempt = await _attemptCheckSig(
-                url: jump, jar: ptCookies, tag: 'check_sig#3(服务端URL)');
+                url: jump,
+                jar: ptCookies,
+                tag: 'check_sig#3(服务端URL)',
+                cancelToken: cancelToken);
             steps.add(attempt.summary);
             if (chainStart.isEmpty) chainStart = attempt.location;
           } catch (e) {
+            if (_isCancelled(e)) {
+              _log('check_sig#3 已取消（兑换超时）');
+              return null;
+            }
             steps.add('check_sig#3 异常 ${_describeError(e, '')}');
           }
           gotPskey = (ptCookies['p_skey'] ?? '').isNotEmpty;
@@ -1295,12 +1509,14 @@ class QQMusicApi implements MusicPlatformApi {
       //    2c) 兜底：p_skey 为空也带全部 jar cookie 试 authorize。
       var code = '';
       if (gotPskey) {
-        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!);
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!,
+            cancelToken: cancelToken);
       }
       if (code.isEmpty && chainStart.isNotEmpty) {
         _log('尝试跟随 OAuth 链取 code：${_maskUrl(chainStart)} '
             'len=${chainStart.length}');
-        code = await _codeFromOAuthChain(startUrl: chainStart, jar: ptCookies);
+        code = await _codeFromOAuthChain(
+            startUrl: chainStart, jar: ptCookies, cancelToken: cancelToken);
         if (code.isNotEmpty) {
           _lastError = null;
           _log('OAuth 链取到 code=${_mask(code)}');
@@ -1309,11 +1525,13 @@ class QQMusicApi implements MusicPlatformApi {
       // OAuth 链过程中若补发了 p_skey，再走一次 authorize
       if (code.isEmpty && (ptCookies['p_skey'] ?? '').isNotEmpty) {
         _log('OAuth 链后补发 p_skey=${_mask(ptCookies['p_skey'])}，重试 authorize');
-        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!);
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey']!,
+            cancelToken: cancelToken);
       }
       if (code.isEmpty) {
         _log('兜底：p_skey=${_mask(ptCookies['p_skey'])} 时也尝试 authorize');
-        code = await _authorizeForCode(ptCookies, ptCookies['p_skey'] ?? '');
+        code = await _authorizeForCode(ptCookies, ptCookies['p_skey'] ?? '',
+            cancelToken: cancelToken);
       }
       if (code.isEmpty) {
         final detail = steps.isEmpty ? '无有效响应' : steps.join('；');
@@ -1335,6 +1553,7 @@ class QQMusicApi implements MusicPlatformApi {
                 'format': 'json',
                 'data': jsonEncode(_qqLoginPayload(code)),
               },
+              cancelToken: cancelToken,
               options: Options(headers: {'Referer': 'https://y.qq.com/'}));
           final raw = resp.data;
           if (raw is! Map) {
@@ -1361,6 +1580,10 @@ class QQMusicApi implements MusicPlatformApi {
           }
           _lastError = 'QQLogin 返回 code=${bizCode ?? outerCode}（$base）';
         } catch (e) {
+          if (_isCancelled(e)) {
+            _log('QQLogin 已取消（兑换超时）');
+            return null;
+          }
           _lastError = _describeError(e, 'QQLogin 请求失败（$base）');
           _log(_lastError!);
         }
@@ -1376,17 +1599,9 @@ class QQMusicApi implements MusicPlatformApi {
   /// 提取 302 Location（大小写兼容）里的 code；Location 缺失/延迟时兜底解析响应体
   String _extractCode(Response<dynamic> resp) {
     final location = _headerValue(resp.headers, 'location');
-    final fromLocation = _extractCodeFromText(location);
+    final fromLocation = extractOAuthCode(location);
     if (fromLocation.isNotEmpty) return fromLocation;
-    return _extractCodeFromText('${resp.data}');
-  }
-
-  /// 从文本（URL / HTML / JS）里提取 OAuth 授权 code。
-  /// 只接受 `?code=` / `&code=`（排除 errcode/retcode 等干扰）且长度 >= 8。
-  String _extractCodeFromText(String text) {
-    if (text.isEmpty) return '';
-    final m = RegExp(r'[?&]code=([A-Za-z0-9_\-]{8,})').firstMatch(text);
-    return m?.group(1) ?? '';
+    return extractOAuthCode('${resp.data}');
   }
 
   /// authorize：先 POST 表单，取不到 code 时无条件降级 GET。
@@ -1394,7 +1609,8 @@ class QQMusicApi implements MusicPlatformApi {
   /// 只要 jar 里还有 pt4_token/pt_oauth_token 等 cookie 就有机会拿到 code。
   /// redirect_uri 做两种编码候选（双重编码 / 明文），按顺序尝试。
   Future<String> _authorizeForCode(
-      Map<String, String> jar, String pSkey) async {
+      Map<String, String> jar, String pSkey,
+      {CancelToken? cancelToken}) async {
     for (final redirectUri in _authorizeRedirectUris) {
       for (final base in _authorizeCandidates) {
         final params = _authorizeParams(pSkey, redirectUri);
@@ -1407,6 +1623,7 @@ class QQMusicApi implements MusicPlatformApi {
         try {
           resp = await JXHttp.dio.post(base,
               data: params,
+              cancelToken: cancelToken,
               options: Options(
                 contentType: Headers.formUrlEncodedContentType,
                 followRedirects: false,
@@ -1415,6 +1632,10 @@ class QQMusicApi implements MusicPlatformApi {
                 headers: headers,
               ));
         } catch (e) {
+          if (_isCancelled(e)) {
+            _log('authorize POST 已取消（兑换超时）');
+            return '';
+          }
           _lastError = _describeError(e, 'authorize POST 失败（$base）');
           _log(_lastError!);
         }
@@ -1429,6 +1650,7 @@ class QQMusicApi implements MusicPlatformApi {
           try {
             resp = await JXHttp.dio.get(base,
                 queryParameters: params,
+                cancelToken: cancelToken,
                 options: Options(
                   followRedirects: false,
                   validateStatus: (s) => s != null && s < 500,
@@ -1436,6 +1658,10 @@ class QQMusicApi implements MusicPlatformApi {
                   headers: headers,
                 ));
           } catch (e) {
+            if (_isCancelled(e)) {
+              _log('authorize GET 已取消（兑换超时）');
+              return '';
+            }
             _lastError = _describeError(e, 'authorize GET 降级失败（$base）');
             _log(_lastError!);
             resp = null;
@@ -1464,6 +1690,7 @@ class QQMusicApi implements MusicPlatformApi {
   Future<String> _codeFromOAuthChain({
     required String startUrl,
     required Map<String, String> jar,
+    CancelToken? cancelToken,
   }) async {
     var url = startUrl;
     var referer = 'https://graph.qq.com/';
@@ -1474,8 +1701,12 @@ class QQMusicApi implements MusicPlatformApi {
         resp = await _getRaw(url, headers: {
           'Referer': referer,
           if (jar.isNotEmpty) 'Cookie': _cookieStr(jar),
-        });
+        }, cancelToken: cancelToken);
       } catch (e) {
+        if (_isCancelled(e)) {
+          _log('OAuth链#$hop 已取消（兑换超时）');
+          return '';
+        }
         _log('OAuth链#$hop 请求异常：${_describeError(e, '')}');
         return '';
       }
@@ -1483,8 +1714,8 @@ class QQMusicApi implements MusicPlatformApi {
       final status = resp.statusCode ?? 0;
       final location = _headerValue(resp.headers, 'location');
       final body = '${resp.data ?? ''}';
-      final fromLocation = _extractCodeFromText(location);
-      final fromBody = _extractCodeFromText(body);
+      final fromLocation = extractOAuthCode(location);
+      final fromBody = extractOAuthCode(body);
       _log('OAuth链#$hop 请求=${_maskUrl(url)}');
       _log('OAuth链#$hop HTTP=$status '
           'jar=[${jar.keys.join(',')}] p_skey=${_mask(jar['p_skey'])}');
@@ -1561,6 +1792,16 @@ class PtuiCbResult {
     required this.message,
     required this.nickname,
   });
+}
+
+/// 从文本（URL / HTML / JS）里提取 OAuth 授权 code（顶层公开，便于单测）。
+/// 只接受 `?code=` / `&code=` / `#code=`（排除 errcode/retcode 等干扰）且长度 >= 8。
+/// QA D-11：授权方也可能用 fragment 形态回跳
+/// （如 `y.qq.com/portal/wx_redirect.html#code=xxx`），旧正则不认 `#code=`。
+String extractOAuthCode(String text) {
+  if (text.isEmpty) return '';
+  final m = RegExp(r'[#?&]code=([A-Za-z0-9_\-]{8,})').firstMatch(text);
+  return m?.group(1) ?? '';
 }
 
 /// 容错解析 QQ 的 `ptuiCB('code','0','url','0','msg', 'nick')` 响应。

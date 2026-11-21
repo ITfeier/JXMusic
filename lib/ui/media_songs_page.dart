@@ -123,9 +123,7 @@ class _MediaSongsPageState extends ConsumerState<MediaSongsPage> {
   }
 
   void _toastPlayFailed() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台')),
-    );
+    jxShowNotice(context, '无法播放：该歌曲可能需要先在设置里登录对应平台');
   }
 
   @override

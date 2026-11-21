@@ -19,6 +19,10 @@
     {
       "name": "keep_background_reason",
       "value": "Keep music playing in the background and show media controls on the lock screen."
+    },
+    {
+      "name": "file_access_persist_reason",
+      "value": "Remember the music files you authorized so imported local music keeps playing after restart."
     }
   ]
 }

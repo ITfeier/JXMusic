@@ -223,17 +223,15 @@ class _SearchPageState extends ConsumerState<SearchPage> {
       if (actual != null &&
           actual.globalId != target.globalId &&
           actual.platform != target.platform) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('已改用 ${JXPlatform.name(actual.platform)} 音源播放'),
-        ));
+        jxShowNotice(context, '已改用 ${JXPlatform.name(actual.platform)} 音源播放');
       }
       return;
     }
     final tried = group.sources.length;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text('「${group.title}」已尝试全部 $tried 个音源，均不可用'
-          '（可能需要登录或受版权限制）'),
-    ));
+    jxShowNotice(
+        context,
+        '「${group.title}」已尝试全部 $tried 个音源，均不可用'
+        '（可能需要登录或受版权限制）');
   }
 
   /// 播放歌词命中的歌曲（队列 = 当前歌词结果的所有命中歌曲）
@@ -242,9 +240,8 @@ class _SearchPageState extends ConsumerState<SearchPage> {
     final ok = await resolveAndPlay(ref, hit.song, queue: queue);
     if (!mounted) return;
     if (!ok) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('「${hit.song.title}」暂无法播放（可能需要登录或受版权限制）'),
-      ));
+      jxShowNotice(
+          context, '「${hit.song.title}」暂无法播放（可能需要登录或受版权限制）');
     }
   }
 

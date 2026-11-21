@@ -309,3 +309,92 @@ class GlassCover extends StatelessWidget {
     );
   }
 }
+
+/// 底部悬浮玻璃通知条：替代 Material 默认的扁平暗色 SnackBar。
+///
+/// 与全 app 液态玻璃语言一致——脱离屏幕边缘的圆角胶囊、背景模糊、
+/// 1px 描边高光、柔和投影；所有底部提示（版权/换源/导入/登录等）
+/// 统一走这里。
+void jxShowNotice(BuildContext context, String message, {Duration? duration}) {
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+    behavior: SnackBarBehavior.floating,
+    // 本体在 [_GlassNotice] 里自绘玻璃，SnackBar 外壳完全透明
+    backgroundColor: Colors.transparent,
+    elevation: 0,
+    padding: EdgeInsets.zero,
+    margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+    duration: duration ?? const Duration(seconds: 4),
+    content: _GlassNotice(message: message),
+  ));
+}
+
+/// 通知条玻璃胶囊本体（背景模糊 + 描边 + 阴影）
+class _GlassNotice extends StatelessWidget {
+  const _GlassNotice({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final tint = isDark ? JXColors.glassDark : JXColors.glassLight;
+    final radius = BorderRadius.circular(20);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? 0.3 : 0.12),
+            blurRadius: 18,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: radius,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  tint.withValues(alpha: 0.92),
+                  tint.withValues(alpha: 0.72),
+                ],
+              ),
+              borderRadius: radius,
+              border: Border.all(
+                color: isDark
+                    ? JXColors.glassStrokeDark
+                    : JXColors.glassStrokeLight,
+              ),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.info_outline_rounded,
+                    size: 18, color: JXColors.primary),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    message,
+                    style: TextStyle(
+                      fontSize: 13,
+                      height: 1.35,
+                      color: isDark
+                          ? JXColors.textOnDark
+                          : JXColors.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

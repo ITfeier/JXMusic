@@ -94,8 +94,9 @@ Future<PlayerService> _pumpPlayerPageLyrics(
     ),
   );
   await tester.pump();
-  // 切到歌词面板（AnimatedSwitcher 300ms 过渡）
-  await tester.tap(find.byIcon(Icons.lyrics_rounded));
+  // 切到歌词面板（AnimatedSwitcher 300ms 过渡）——
+  // 歌词按钮已移除，点击主体（黑胶封面区域）切换
+  await tester.tap(find.byKey(const Key('playerVinylDisc')));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 400));
   return service;

@@ -49,8 +49,10 @@ bool samePlaybackContext({
 
 /// 只采用本次请求新产生的 `lastError`（L-1）。
 ///
-/// 平台 API 的 lastError 只在扫码链路写入、`getPlayUrl` 不清理，直接读会把上一次
-/// 扫码失败的陈旧错误带进音源面板；请求前后快照一致则视为本次无接口错误。
+/// 平台 API 的 `lastError` 可能是上一轮扫码/解析的陈旧错误，直接读会把旧错误
+/// 带进提示；请求前后快照一致则视为本次无接口错误。getPlayUrl 现在会在
+/// 「已知的特定失败原因」（VIP/需登录/节目类/付费）时写入 lastError
+/// （播放失败诊断 P1 文案化），快照法保证 UI 只拿到本次新增的原因。
 String? freshApiError(String? before, String? after) =>
     after != before ? after : null;
 
@@ -96,6 +98,11 @@ Future<bool> resolveAndPlay(
     if (alt == null) return false;
     playable = alt;
     url = alt.audioUrl;
+    // 换平台不再静默（播放失败诊断 P1）：全局提示一次，
+    // 由 ShellPage 监听 lastSourceSwitchNotice 弹 SnackBar。
+    player.reportSourceSwitch('「${song.title}」在'
+        '${JXPlatform.name(song.platform)}不可播，'
+        '已切换${playable.displayPlatform}版本');
     debugPrint('[JXMusic] 「${song.title}」在原平台不可播，已切换 '
         '${playable.displayPlatform} 同名版本');
   }
@@ -253,6 +260,11 @@ Future<SourceSwitchResult> switchSource(WidgetRef ref, Song source) async {
 
 /// 在其它平台搜索同名/同歌手歌曲，返回第一个能解析出直链的免费版本。
 ///
+/// 候选校验链（播放失败诊断 P1，历史问题：VIP 曲兜底会被换成
+/// Live/Demo/DJ/翻唱/30 秒片段，或同名不同歌手的歌）：
+/// 非 VIP → 标题相似 → [similarArtist] 同歌手 →
+/// [durationClose] 时长接近 → 原曲非特殊版本时排除 [isOddVersion] 候选。
+///
 /// 抽成独立函数（接收 [MusicApiHub] 而不是 ref）便于单独测试。
 Future<Song?> findAlternativeSong(
   MusicApiHub hub,
@@ -283,6 +295,9 @@ Future<Song?> findAlternativeSong(
       for (final candidate in results) {
         if (candidate.vip) continue; // 优先免费版本，避免再撞登录墙
         if (!_similarTitle(candidate.title, title)) continue;
+        if (!similarArtist(candidate.artist, artist)) continue;
+        if (!durationClose(candidate.duration, song.duration)) continue;
+        if (isOddVersion(candidate.title) && !isOddVersion(title)) continue;
         try {
           final url = await api
               .getPlayUrl(candidate)
@@ -295,6 +310,43 @@ Future<Song?> findAlternativeSong(
     } catch (_) {}
   }
   return null;
+}
+
+/// 跨平台兜底的「同歌手」判定（播放失败诊断 P1）：
+/// 候选歌手串归一化后须与原曲任一歌手互相包含，才算同一个人唱的；
+/// 原曲歌手缺失/未知（空、未知歌手、群星）时不再过滤。
+bool similarArtist(String candidateArtist, String artist) {
+  String norm(String s) => s.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+  final tokens = artist
+      .split(RegExp(r'[、,，/＆&×]'))
+      .map(norm)
+      .where((t) =>
+          t.isNotEmpty && t != '未知歌手' && t != '群星' && t != 'unknownartist')
+      .toList();
+  if (tokens.isEmpty) return true;
+  final candidate = norm(candidateArtist);
+  if (candidate.isEmpty) return false;
+  return tokens.any((t) => candidate.contains(t) || t.contains(candidate));
+}
+
+/// 兜底候选时长校验（播放失败诊断 P1）：双方时长都已知时，
+/// 差值须在 ±8 秒或原时长 15% 以内，防止把正歌换成 30 秒片段/超长 Live；
+/// 任一方时长未知则不限制。
+bool durationClose(int candidateSeconds, int originalSeconds) {
+  if (originalSeconds <= 0 || candidateSeconds <= 0) return true;
+  final diff = (candidateSeconds - originalSeconds).abs();
+  return diff <= 8 || diff <= originalSeconds * 0.15;
+}
+
+/// 特殊版本特征（现场/伴奏/DJ/翻唱/片段等，播放失败诊断 P1）。
+/// 英文词用 `\b` 词边界，避免误伤「Discover/Believe」这类正常歌名。
+bool isOddVersion(String title) {
+  return RegExp(
+    r'(\blive\b|现场版|現場版|演唱会|演唱會|\bconcert\b|伴奏|\bbacking\b|'
+    r'翻唱|\bcover\b|\bdemo\b|\bacoustic\b|\bremix\b|dj版|电音版|'
+    r'片段|试听|試聽|铃声|鈴聲|纯音乐)',
+    caseSensitive: false,
+  ).hasMatch(title);
 }
 
 /// 标题相似度：归一化后互相包含即可（容忍前后缀、大小写、标点差异）

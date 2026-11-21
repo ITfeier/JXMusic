@@ -23,8 +23,15 @@ Future<void> main() async {
   if (isAndroid) {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   }
-  // 播放引擎初始化（media_kit / libmpv）
-  MediaKit.ensureInitialized();
+  // 播放引擎初始化（media_kit / libmpv）。
+  // 缺少 libmpv 原生库的环境（如 x86_64 模拟器）会 rethrow，
+  // 这里捕获后继续启动 UI，播放功能在 PlayerService 内优雅降级，
+  // 不能让引擎缺失把整个 App 卡成白屏。
+  try {
+    MediaKit.ensureInitialized();
+  } catch (e) {
+    debugPrint('[JXMusic] 播放引擎初始化失败（UI 继续启动，播放不可用）: $e');
+  }
   // 本地存储
   await Hive.initFlutter();
   await Hive.openBox<dynamic>(JXConstants.hiveBoxSettings);

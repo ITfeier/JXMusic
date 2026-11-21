@@ -11,7 +11,7 @@ import '../services/local_format_service.dart';
 import '../services/local_formats/format_decoder.dart';
 import '../services/local_music.dart';
 import '../services/local_paths.dart';
-import 'dir_browser.dart';
+import '../services/ohos_system_music.dart';
 import 'glass.dart';
 import 'layout.dart';
 
@@ -33,6 +33,7 @@ class LocalPage extends StatefulWidget {
     this.musicService,
     this.formatService,
     this.pathsStore,
+    this.systemMusicService,
     this.playQueue,
     this.autoScan = true,
     this.androidOverride,
@@ -43,6 +44,9 @@ class LocalPage extends StatefulWidget {
   final LocalMusicService? musicService;
   final LocalFormatService? formatService;
   final LocalPathsStore? pathsStore;
+
+  /// 鸿蒙「系统音乐导入」服务（非鸿蒙平台传 null 或不传即可）。
+  final OhosSystemMusicService? systemMusicService;
   final PlayQueueCallback? playQueue;
 
   /// 打开页面后是否自动扫描已配置目录（PRD：「下次打开自动扫描」）。
@@ -75,6 +79,16 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
   int _found = 0;
   String? _fatalError;
 
+  /// 鸿蒙系统导入服务（非鸿蒙平台为 null，相关 UI 全部隐藏）。
+  OhosSystemMusicService? _systemMusic;
+  List<Song> _systemSongs = const <Song>[];
+  bool _importing = false;
+  int _importDone = 0;
+  int _importTotal = 0;
+
+  /// 展示/播放用的合并列表：系统导入在前，沙盒扫描在后。
+  List<Song> get _displaySongs => <Song>[..._systemSongs, ..._songs];
+
   bool get _isAndroid =>
       widget.androidOverride ??
       (defaultTargetPlatform == TargetPlatform.android);
@@ -94,6 +108,8 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
         widget.formatService ??
         LocalFormatService(decoders: const <EncryptedAudioDecoder>[]);
     _hasFileAccess = !_isAndroid;
+    // 鸿蒙：默认构造系统导入服务（测试/桌面为 null，走注入或隐藏入口）。
+    _systemMusic = widget.systemMusicService ?? (_isOhos ? OhosSystemMusicService() : null);
     _init();
   }
 
@@ -130,6 +146,17 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       _scanPaths = paths;
       _initialized = true;
     });
+    // 鸿蒙：加载已导入的系统音乐并激活持久化授权（重启后仍可播）。
+    final systemMusic = _systemMusic;
+    if (systemMusic != null) {
+      try {
+        final systemSongs = await systemMusic.loadSongs();
+        if (!mounted) return;
+        setState(() => _systemSongs = systemSongs);
+      } catch (e) {
+        debugPrint('[JXMusic] 加载系统导入音乐失败: $e');
+      }
+    }
     if (widget.autoScan && paths.isNotEmpty && _hasFileAccess) {
       await _scan();
     }
@@ -248,14 +275,16 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
     }
   }
 
-  /// 播放列表第 [index] 首：加密歌曲先解密（带进度），失败弹原因，成功后回调播放。
+  /// 播放列表第 [index] 首（合并列表：系统导入 + 沙盒扫描）：
+  /// 加密歌曲先解密（带进度），失败弹原因，成功后回调播放。
   Future<void> _playAt(int index) async {
-    if (index < 0 || index >= _songs.length) return;
-    final song = _songs[index];
+    final all = _displaySongs;
+    if (index < 0 || index >= all.length) return;
+    final song = all[index];
     final path = song.audioUrl ?? '';
     final encrypted = path.isNotEmpty && _formatService.isEncryptedPath(path);
     if (!encrypted) {
-      widget.playQueue?.call(List<Song>.of(_songs), index);
+      widget.playQueue?.call(List<Song>.of(all), index);
       return;
     }
 
@@ -277,8 +306,10 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       // （ADR-004 D4 / 评审 R-17）；audioUrl 仍保留源文件路径。
       try {
         final enriched = await _musicService.enrichFromDecrypted(song, result);
-        if (mounted && index < _songs.length) {
-          setState(() => _songs[index] = enriched);
+        // 合并列表下标换算回沙盒扫描列表下标（加密歌只在扫描结果里）。
+        final scannedIndex = index - _systemSongs.length;
+        if (mounted && scannedIndex >= 0 && scannedIndex < _songs.length) {
+          setState(() => _songs[scannedIndex] = enriched);
         }
       } catch (e) {
         debugPrint('[JXMusic] 回填加密歌曲标签失败: $e');
@@ -286,7 +317,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       if (!mounted) return;
       // 播放回调传「原始列表 + 原始索引」，Song.audioUrl 保留源路径，
       // 解密结果由播放链路 resolver 命中缓存。
-      widget.playQueue?.call(List<Song>.of(_songs), index);
+      widget.playQueue?.call(List<Song>.of(all), index);
       return;
     }
     if (result != null) {
@@ -308,70 +339,83 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       );
       return;
     }
-    widget.playQueue?.call(List<Song>.of(_songs), index);
+    widget.playQueue?.call(List<Song>.of(_displaySongs), index);
   }
 
-  Future<int> _safeCacheBytes() async {
+  /// 鸿蒙：从系统文件管理导入音频文件（选择器多选 → 持久化授权 → 识别标签）。
+  Future<void> _importSystemMusic() async {
+    final systemMusic = _systemMusic;
+    if (systemMusic == null || _importing) return;
+    setState(() {
+      _importing = true;
+      _importDone = 0;
+      _importTotal = 0;
+    });
+    var added = 0;
     try {
-      return await _formatService.cacheSizeBytes();
-    } catch (_) {
-      return 0;
+      added = await systemMusic.importFromSystem(
+        onProgress: (done, total) {
+          if (mounted) {
+            setState(() {
+              _importDone = done;
+              _importTotal = total;
+            });
+          }
+        },
+      );
+    } catch (e) {
+      debugPrint('[JXMusic] 导入系统音乐失败: $e');
     }
-  }
-
-  Future<int> _safeCacheCount() async {
     try {
-      return await _formatService.cacheFileCount();
-    } catch (_) {
-      return 0;
+      final systemSongs = await systemMusic.loadSongs();
+      if (mounted) {
+        setState(() {
+          _systemSongs = systemSongs;
+          _importing = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[JXMusic] 刷新系统导入音乐失败: $e');
+      if (mounted) setState(() => _importing = false);
+      return;
     }
+    if (!mounted || added <= 0) return;
+    jxShowNotice(context, '已导入 $added 首系统音乐');
   }
 
-  Future<void> _openDirectorySheet() async {
-    final cacheBytes = await _safeCacheBytes();
-    final cacheCount = await _safeCacheCount();
-    List<String> quickPaths = _scanPaths;
-    try {
-      quickPaths = await _pathsStore.defaultCandidates();
-    } catch (_) {}
-    if (!mounted) return;
-
-    await showModalBottomSheet<void>(
+  /// 鸿蒙：长按移除一首系统导入歌曲（撤销授权 + 删除记录，不动系统原文件）。
+  Future<void> _removeSystemSong(int index) async {
+    final systemMusic = _systemMusic;
+    if (systemMusic == null) return;
+    final all = _displaySongs;
+    if (index < 0 || index >= all.length) return;
+    final song = all[index];
+    final confirmed = await showDialog<bool>(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _DirectoryManagerSheet(
-        paths: _scanPaths,
-        quickPaths: quickPaths,
-        cacheBytes: cacheBytes,
-        cacheCount: cacheCount,
-        onAddPath: _addPath,
-        onRemovePath: _removePath,
-        onScan: _scan,
-        onClearCache: _formatService.clearCache,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('移除导入歌曲'),
+        content: Text(
+          '「${song.title}」将从导入列表移除，不会删除系统里的原文件。',
+          style: const TextStyle(fontSize: 13, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
       ),
     );
-  }
-
-  Future<List<String>> _addPath(String path) async {
+    if (confirmed != true || !mounted) return;
     try {
-      final updated = await _pathsStore.add(path);
-      if (mounted) setState(() => _scanPaths = List<String>.of(updated));
-      return updated;
+      final remain = await systemMusic.removeSong(song);
+      if (mounted) setState(() => _systemSongs = remain);
     } catch (e) {
-      debugPrint('[JXMusic] 添加扫描目录失败: $e');
-      return List<String>.of(_scanPaths);
-    }
-  }
-
-  Future<List<String>> _removePath(String path) async {
-    try {
-      final updated = await _pathsStore.remove(path);
-      if (mounted) setState(() => _scanPaths = List<String>.of(updated));
-      return updated;
-    } catch (e) {
-      debugPrint('[JXMusic] 删除扫描目录失败: $e');
-      return List<String>.of(_scanPaths);
+      debugPrint('[JXMusic] 移除系统导入歌曲失败: $e');
     }
   }
 
@@ -418,11 +462,12 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
                   ],
                 ),
               ),
-              GlassButton(
-                text: '扫描目录',
-                icon: Icons.folder_open_rounded,
-                onPressed: _openDirectorySheet,
-              ),
+              if (_isOhos)
+                GlassButton(
+                  text: '导入',
+                  icon: Icons.library_add_rounded,
+                  onPressed: _importing ? null : _importSystemMusic,
+                ),
             ],
           ),
         ),
@@ -435,7 +480,16 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
   String _headerSummary() {
     if (!_initialized) return '正在读取扫描目录…';
     if (_loading) return '正在扫描…已发现 $_found 首';
-    if (_scanPaths.isEmpty) return '未配置扫描目录，点「扫描目录」添加';
+    if (_importing) {
+      return _importTotal > 0
+          ? '正在识别系统音乐… $_importDone/$_importTotal'
+          : '正在导入系统音乐…';
+    }
+    if (_systemSongs.isNotEmpty) {
+      return '系统导入 ${_systemSongs.length} 首 · '
+          '${_scanPaths.length} 个目录 · ${_songs.length} 首';
+    }
+    if (_scanPaths.isEmpty) return '未配置扫描目录';
     return '${_scanPaths.length} 个目录 · ${_songs.length} 首';
   }
 
@@ -505,16 +559,17 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
       );
     }
 
+    final all = _displaySongs;
     final children = <Widget>[];
     if (_scanErrors.isNotEmpty) children.add(_buildErrors(textSub));
-    if (_isOhos && _songs.isEmpty) {
+    if (_isOhos && all.isEmpty && !_importing) {
       children.add(_buildOhosSandboxHint(textColor, textSub));
     }
-    if (_songs.isEmpty) {
+    if (all.isEmpty) {
       children.add(_buildEmpty(textColor, textSub));
     } else {
       children.add(_buildPlayAllRow(textSub));
-      for (var i = 0; i < _songs.length; i++) {
+      for (var i = 0; i < all.length; i++) {
         children.add(_buildSongTile(i, textColor, textSub));
       }
     }
@@ -567,8 +622,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 鸿蒙空态说明：沙盒扫描天然受限，明确告知用户原因与出路，
-  /// 避免被当成「扫描坏了」。
+  /// 鸿蒙空态说明：系统目录不能直接扫描，引导用户用「导入」从系统文件管理选歌。
   Widget _buildOhosSandboxHint(Color textColor, Color textSub) {
     return GlassCard(
       margin: const EdgeInsets.only(bottom: 8),
@@ -585,7 +639,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
               ),
               const SizedBox(width: 6),
               const Text(
-                '鸿蒙系统目录访问受限',
+                '鸿蒙系统音乐导入',
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -595,9 +649,8 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 4),
           Text(
-            '当前仅能扫描应用沙盒内的音乐目录（如应用「我的音乐」）。'
-            '把音乐文件复制/移动到应用沙盒目录后重新扫描即可，'
-            '在线搜索、歌单播放不受影响。',
+            '鸿蒙系统目录不允许应用直接扫描。点右上角「导入」从系统文件管理'
+            '多选音频文件，导入后长期可播、重启不丢（首次导入时系统会询问授权）。',
             style: TextStyle(fontSize: 10.5, color: textSub, height: 1.5),
           ),
         ],
@@ -622,7 +675,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
           ),
           const SizedBox(height: 8),
           Text(
-            '点右上角「扫描目录」添加音乐目录后重新扫描；'
+            '打开页面自动扫描已配置目录；'
             '支持 NCM/QMC/MFLAC/MGG/KGM/VPR 解密播放',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: textSub, height: 1.5),
@@ -646,7 +699,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
           ),
           const SizedBox(width: 10),
           Text(
-            '共 ${_songs.length} 首',
+            '共 ${_displaySongs.length} 首',
             style: TextStyle(fontSize: 12, color: textSub),
           ),
         ],
@@ -655,7 +708,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
   }
 
   Widget _buildSongTile(int index, Color textColor, Color textSub) {
-    final song = _songs[index];
+    final song = _displaySongs[index];
     final path = song.audioUrl ?? '';
     final encrypted = path.isNotEmpty && _formatService.isEncryptedPath(path);
     final encryptionLabel = encrypted
@@ -668,6 +721,8 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
     final chipText = encrypted
         ? '$encryptionLabel · ${unsupportedKgg ? '暂不支持' : '需解密'}'
         : null;
+    // 系统导入歌曲（合并列表前段）：长按可移除（撤销授权 + 删除记录）。
+    final isSystemSong = index < _systemSongs.length;
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 8),
       leading: GlassCover(
@@ -721,6 +776,7 @@ class _LocalPageState extends State<LocalPage> with WidgetsBindingObserver {
         onPressed: () => _playAt(index),
       ),
       onTap: () => _playAt(index),
+      onLongPress: isSystemSong ? () => _removeSystemSong(index) : null,
     );
   }
 
@@ -795,304 +851,4 @@ class _DecryptProgressDialogState extends State<_DecryptProgressDialog> {
       ),
     );
   }
-}
-
-/// 音乐目录管理底部弹层：已配置目录增删、缓存占用清理、开始扫描。
-class _DirectoryManagerSheet extends StatefulWidget {
-  const _DirectoryManagerSheet({
-    required this.paths,
-    required this.quickPaths,
-    required this.cacheBytes,
-    required this.cacheCount,
-    required this.onAddPath,
-    required this.onRemovePath,
-    required this.onScan,
-    required this.onClearCache,
-  });
-
-  final List<String> paths;
-  final List<String> quickPaths;
-  final int cacheBytes;
-  final int cacheCount;
-  final Future<List<String>> Function(String path) onAddPath;
-  final Future<List<String>> Function(String path) onRemovePath;
-  final Future<void> Function() onScan;
-  final Future<int> Function() onClearCache;
-
-  @override
-  State<_DirectoryManagerSheet> createState() => _DirectoryManagerSheetState();
-}
-
-class _DirectoryManagerSheetState extends State<_DirectoryManagerSheet> {
-  late List<String> _paths;
-  late int _cacheBytes;
-  late int _cacheCount;
-
-  @override
-  void initState() {
-    super.initState();
-    _paths = List<String>.of(widget.paths);
-    _cacheBytes = widget.cacheBytes;
-    _cacheCount = widget.cacheCount;
-  }
-
-  Future<void> _addFromBrowser() async {
-    final picked = await showDirectoryPickerDialog(
-      context,
-      initialPath: _paths.isNotEmpty ? _paths.first : null,
-      quickPaths: widget.quickPaths,
-    );
-    if (picked == null || picked.trim().isEmpty) return;
-    await _add(picked.trim());
-  }
-
-  Future<void> _addFromInput() async {
-    final value = await showDialog<String>(
-      context: context,
-      builder: (_) => const _ManualPathInputDialog(),
-    );
-    if (value == null || value.isEmpty) return;
-    await _add(value);
-  }
-
-  Future<void> _add(String path) async {
-    try {
-      final updated = await widget.onAddPath(path);
-      if (!mounted) return;
-      setState(() => _paths = List<String>.of(updated));
-    } catch (e) {
-      debugPrint('[JXMusic] 添加目录失败: $e');
-    }
-  }
-
-  Future<void> _remove(String path) async {
-    try {
-      final updated = await widget.onRemovePath(path);
-      if (!mounted) return;
-      setState(() => _paths = List<String>.of(updated));
-    } catch (e) {
-      debugPrint('[JXMusic] 删除目录失败: $e');
-    }
-  }
-
-  Future<void> _clearCache() async {
-    try {
-      await widget.onClearCache();
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() {
-      _cacheBytes = 0;
-      _cacheCount = 0;
-    });
-  }
-
-  void _startScan() {
-    Navigator.of(context).pop();
-    unawaited(widget.onScan());
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final textSub = isDark
-        ? JXColors.textOnDarkSecondary
-        : JXColors.textSecondary;
-    final sheetHeight = (MediaQuery.of(context).size.height * 0.78).clamp(
-      320.0,
-      640.0,
-    );
-
-    return SafeArea(
-      top: false,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        child: SizedBox(
-          height: sheetHeight,
-          child: GlassCard(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        '音乐目录管理',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    GlassIconButton(
-                      icon: Icons.close_rounded,
-                      size: 30,
-                      onPressed: () => Navigator.of(context).pop(),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  '扫描以下目录并合并去重；加密格式解密后才能播放',
-                  style: TextStyle(fontSize: 11, color: textSub),
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: _paths.isEmpty
-                      ? Center(
-                          child: Text(
-                            '还没有添加扫描目录',
-                            style: TextStyle(fontSize: 12, color: textSub),
-                          ),
-                        )
-                      : ListView.builder(
-                          itemCount: _paths.length,
-                          itemBuilder: (context, index) {
-                            final path = _paths[index];
-                            return ListTile(
-                              dense: true,
-                              contentPadding: EdgeInsets.zero,
-                              leading: const Icon(
-                                Icons.folder_rounded,
-                                size: 20,
-                                color: JXColors.primary,
-                              ),
-                              title: Text(
-                                path,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12),
-                              ),
-                              trailing: IconButton(
-                                icon: const Icon(
-                                  Icons.delete_outline_rounded,
-                                  size: 20,
-                                ),
-                                tooltip: '删除目录',
-                                onPressed: () => _remove(path),
-                              ),
-                            );
-                          },
-                        ),
-                ),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    GlassButton(
-                      text: '开始扫描',
-                      icon: Icons.search_rounded,
-                      primary: true,
-                      height: 38,
-                      onPressed: _paths.isEmpty ? null : _startScan,
-                    ),
-                    GlassButton(
-                      text: '浏览目录…',
-                      icon: Icons.folder_open_rounded,
-                      height: 38,
-                      onPressed: _addFromBrowser,
-                    ),
-                    GlassButton(
-                      text: '手动输入',
-                      icon: Icons.keyboard_rounded,
-                      height: 38,
-                      onPressed: _addFromInput,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    const Icon(
-                      Icons.sd_storage_rounded,
-                      size: 16,
-                      color: JXColors.accentCyan,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        '解密缓存：${_formatBytes(_cacheBytes)} · $_cacheCount 个文件',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: textSub),
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: _clearCache,
-                      child: const Text('清理', style: TextStyle(fontSize: 12)),
-                    ),
-                  ],
-                ),
-                Text(
-                  '支持加密格式：NCM（网易云）/ QMC、MFLAC、MGG（QQ）/ '
-                  'KGM、VPR（酷狗）；解密结果只缓存在本机，不上传。',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    color: textSub,
-                    height: 1.35,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 手动输入目录对话框（controller 由本 widget 持有，避免退场动画期间被 dispose）。
-class _ManualPathInputDialog extends StatefulWidget {
-  const _ManualPathInputDialog();
-
-  @override
-  State<_ManualPathInputDialog> createState() => _ManualPathInputDialogState();
-}
-
-class _ManualPathInputDialogState extends State<_ManualPathInputDialog> {
-  final TextEditingController _controller = TextEditingController();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('手动输入目录'),
-      content: TextField(
-        controller: _controller,
-        autofocus: true,
-        decoration: const InputDecoration(
-          hintText: '例如 /storage/emulated/0/Music 或 D:\\Music',
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(_controller.text.trim()),
-          child: const Text('添加'),
-        ),
-      ],
-    );
-  }
-}
-
-String _formatBytes(int bytes) {
-  if (bytes <= 0) return '0 B';
-  const units = <String>['B', 'KB', 'MB', 'GB'];
-  var value = bytes.toDouble();
-  var unitIndex = 0;
-  while (value >= 1024 && unitIndex < units.length - 1) {
-    value /= 1024;
-    unitIndex++;
-  }
-  final decimals = unitIndex == 0 || value >= 100 ? 0 : 1;
-  return '${value.toStringAsFixed(decimals)} ${units[unitIndex]}';
 }

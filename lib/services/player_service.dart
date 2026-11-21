@@ -48,12 +48,13 @@ class PlayerService extends ChangeNotifier {
     this.lyricsResolver,
     this.onSettingChanged,
     this.resolutionErrorHint,
+    this.onlineResolutionErrorHint,
     double initialVolume = 80,
     int initialLoopMode = 2,
     double initialSpeed = 1.0,
     String initialAudioEffect = JXAudioEffects.noneId,
     bool initPlayer = true,
-  }) {
+  })  : _playerCreationRequested = initPlayer {
     _volume = initialVolume;
     _loopMode = initialLoopMode;
     _speed = initialSpeed;
@@ -62,6 +63,11 @@ class PlayerService extends ChangeNotifier {
         : JXAudioEffects.noneId;
     if (initPlayer) _init();
   }
+
+  /// 是否请求过真实引擎创建：true 且 _player 为 null 说明引擎初始化失败
+  /// （如 x86_64 模拟器缺 libmpv），点播时给出明确提示；
+  /// 测试 initPlayer:false 则保持静默 no-op 语义。
+  final bool _playerCreationRequested;
 
   /// 一首歌真正开始播放时回调（用于记录播放历史）
   final void Function(Song song)? onSongStarted;
@@ -79,6 +85,10 @@ class PlayerService extends ChangeNotifier {
   /// 为空时退回通用文案。
   final String? Function()? resolutionErrorHint;
 
+  /// 在线曲目直链解析失败的具体中文原因提供者（平台 API 本次新增的
+  /// lastError，播放失败诊断 P1 文案化）；为空时退回通用文案。
+  final String? Function()? onlineResolutionErrorHint;
+
   String? _lastResolutionError;
 
   /// 最近一次切歌时本地曲目解析/解密失败的原因（中文，供 UI 提示）。
@@ -88,6 +98,26 @@ class PlayerService extends ChangeNotifier {
   void clearResolutionError() {
     if (_lastResolutionError == null) return;
     _lastResolutionError = null;
+    notifyListeners();
+  }
+
+  String? _lastSourceSwitchNotice;
+
+  /// 最近一次跨平台兜底换歌的提示（中文，供全局 SnackBar 展示一次后清除；
+  /// 播放失败诊断 P1：换平台不再静默）。
+  String? get lastSourceSwitchNotice => _lastSourceSwitchNotice;
+
+  /// 跨平台兜底成功换歌时上报提示（由 playback.resolveAndPlay 调用）。
+  void reportSourceSwitch(String notice) {
+    if (notice.trim().isEmpty) return;
+    _lastSourceSwitchNotice = notice;
+    notifyListeners();
+  }
+
+  /// UI 展示完提示后清除（不改变当前播放）。
+  void clearSourceSwitchNotice() {
+    if (_lastSourceSwitchNotice == null) return;
+    _lastSourceSwitchNotice = null;
     notifyListeners();
   }
 
@@ -178,9 +208,21 @@ class PlayerService extends ChangeNotifier {
   StreamSubscription? _completeSub;
   StreamSubscription? _playlistSub;
   StreamSubscription? _errSub;
+  StreamSubscription? _logSub;
 
   Future<void> _init() async {
-    _player = Player();
+    try {
+      // logLevel=warn（+43）：默认 error 拿不到 ffmpeg tcp/HTTP 细节日志，
+      // 真机排障（libmpv 打开直链失败取证）需要 warn 级别进 hilog。
+      _player = Player(
+          configuration: PlayerConfiguration(logLevel: MPVLogLevel.warn));
+    } catch (e) {
+      // libmpv 缺失（如 x86_64 模拟器）：保持 _player 为 null，
+      // 其余流程全部空安全跳过；点播时由 _playAt 给出明确提示。
+      _player = null;
+      debugPrint('[JXMusic] 播放器创建失败（播放功能不可用）: $e');
+      return;
+    }
     _player?.setVolume(_volume);
     if (_speed != 1.0) {
       _player?.setRate(_speed);
@@ -203,26 +245,50 @@ class PlayerService extends ChangeNotifier {
       _playing = p;
       notifyListeners();
     });
-    _completeSub = _player?.stream.completed.listen((_) {
-      _onTrackComplete();
-    });
+    // mpv/media_kit 的 completed 流在 START_FILE（开始加载新文件）时也会发
+    // completed=false，真正的「播完」只有 completed=true（eof-reached）。
+    // 若不判值直接切歌，每次 open 新歌都会立刻被误切到下一首，级联中止
+    // 所有进行中的加载并一路跳到队尾——真机「点了没反应/大量跳过」的
+    // 根因（+43 修复：hilog 取证 START_FILE→切歌竞态）。
+    _completeSub = _player?.stream.completed.listen(onCompletedEvent);
     // mpv 打开失败（如 CDN 直链过期）不会让 open() 抛异常，只走 error 流：
     // 监听错误事件，对在线曲目自动清掉过期直链并重新解析一次。
     _errSub = _player?.stream.error.listen((error) {
       _onPlayerError(error);
+    });
+    // mpv warn/error 细节日志（ffmpeg tcp/HTTP 等）转 debugPrint 进 hilog，
+    // 供真机排障定位 libmpv 打开直链失败的具体网络层原因。
+    _logSub = _player?.stream.log.listen((l) {
+      if (l.level == 'error' || l.level == 'warn') {
+        debugPrint('[JXMusic] mpv ${l.level}/${l.prefix}: ${l.text}');
+      }
     });
   }
 
   /// 播放器报错：在线歌曲的直链可能已过期（历史/收藏里存的是解析时的 CDN
   /// 链接，几分钟到几小时就失效）。清掉队列项里的旧直链并重解析重开一次；
   /// 每首歌只重试一次，本地曲目不自动重试（解密失败重试结果相同）。
+  /// 重试后仍失败（如设备端 libmpv 打不开直链）不再静默停止——真机反馈
+  /// 「点了没反应」即此路径——提示后跳下一首（+43）。
   Future<void> _onPlayerError(String error) async {
     debugPrint('[JXMusic] 播放器错误: $error');
     if (_disposed) return;
     final song = currentSong;
     if (song == null) return;
     if (song.platform == JXPlatform.local) return;
-    if (_retriedSongId == song.globalId) return;
+    if (_retriedSongId == song.globalId) {
+      // 重试一次后仍打开失败：给出明确提示，并按死链 autoAdvance 语义跳
+      // 下一首（最后一首则提示后停下），不再无声卡死。
+      if (_currentIndex + 1 < _queue.length) {
+        _lastResolutionError = '「${song.title}」播放失败，已跳过';
+        notifyListeners();
+        await _playAt(_currentIndex + 1, autoAdvance: true);
+      } else {
+        _lastResolutionError = '「${song.title}」播放失败，可尝试切换其它平台音源';
+        notifyListeners();
+      }
+      return;
+    }
     _retriedSongId = song.globalId;
     final index = _currentIndex;
     if (index >= 0 && index < _queue.length &&
@@ -232,7 +298,8 @@ class PlayerService extends ChangeNotifier {
         ..['audioUrl'] = null);
       _queue[index] = cleared;
     }
-    await _playAt(index);
+    // 重试也按自动前进处理：重解析仍拿不到直链时跳下一首，不停死整个队列。
+    await _playAt(index, autoAdvance: true);
     notifyListeners();
   }
 
@@ -255,6 +322,16 @@ class PlayerService extends ChangeNotifier {
     }
   }
 
+  /// media_kit completed 流统一入口（+43）：START_FILE 会发 completed=false
+  /// （开始加载新文件），只有 eof-reached 的 completed=true 才代表播完。
+  /// 不判值会在每次 open 新歌时立刻误切下一首（级联跳歌根因）。
+  /// 公开仅供回归测试注入事件。
+  @visibleForTesting
+  void onCompletedEvent(bool completed) {
+    if (!completed) return;
+    unawaited(_onTrackComplete());
+  }
+
   Future<void> _onTrackComplete() async {
     if (_queue.isEmpty) return;
     switch (_loopMode) {
@@ -269,9 +346,9 @@ class PlayerService extends ChangeNotifier {
       default:
         final next = _currentIndex + 1;
         if (next < _queue.length) {
-          await _playAt(next);
+          await _playAt(next, autoAdvance: true);
         } else if (_loopMode == 2) {
-          await _playAt(0);
+          await _playAt(0, autoAdvance: true);
         }
     }
   }
@@ -357,7 +434,10 @@ class PlayerService extends ChangeNotifier {
     await _playAt(_currentIndex);
   }
 
-  Future<void> _playAt(int index) async {
+  /// [autoAdvance] 为 true 表示本次播放来自自动前进（自然播完的下一首、
+  /// 播放器报错后的重试）：曲目解析不出直链时提示后跳到队列下一首，
+  /// 不让一首死链歌把整个队列卡死。用户主动点播保持原有「停下并提示」语义。
+  Future<void> _playAt(int index, {bool autoAdvance = false}) async {
     if (index < 0 || index >= _queue.length) return;
     final generation = ++_playGeneration;
     _currentIndex = index;
@@ -418,10 +498,32 @@ class PlayerService extends ChangeNotifier {
     if (generation != _playGeneration) return;
     if (playUrl == null || playUrl.isEmpty) {
       debugPrint('[JXMusic] 歌曲无可播放链接: ${song.title}');
+      // 播放失败诊断 P1（文案化）：有平台 API 的具体原因
+      // （VIP/需登录/节目类/付费）就带进提示，不再只有笼统的「暂无播放链接」。
+      final reason = onlineResolutionErrorHint?.call();
+      final detail =
+          (reason == null || reason.trim().isEmpty) ? '' : '（$reason）';
+      if (autoAdvance && index + 1 < _queue.length) {
+        // 自动前进遇到死链曲目（VIP/版权/试听限制解析不出直链）：
+        // 提示一次后跳下一首，队列不中断。
+        _lastResolutionError = '「${song.title}」暂无播放链接$detail，已跳过';
+        notifyListeners();
+        await _playAt(index + 1, autoAdvance: true);
+        return;
+      }
+      _lastResolutionError =
+          '「${song.title}」暂无播放链接$detail，可尝试切换其它平台音源';
       notifyListeners();
       return;
     }
 
+    if (_player == null && _playerCreationRequested) {
+      // 播放引擎不可用（初始化失败环境）：给出明确提示而不是静默无反应。
+      _lastResolutionError = '播放引擎初始化失败，播放功能暂不可用';
+      debugPrint('[JXMusic] 播放引擎不可用，无法播放: ${song.title}');
+      notifyListeners();
+      return;
+    }
     try {
       // 平台 CDN 播放需对应 Referer 头（QQ/酷狗/网易云各不相同）
       Map<String, String>? headers;
@@ -528,11 +630,12 @@ class PlayerService extends ChangeNotifier {
     final next = _loopMode == 3 ? _randomIndex() : _currentIndex + 1;
     if (next >= _queue.length) {
       if (_loopMode == 2) {
-        await _playAt(0);
+        await _playAt(0, autoAdvance: true);
       }
       return;
     }
-    await _playAt(next);
+    // 按下一首的意图是让音乐继续：目标曲目是死链时提示后自动再往后跳。
+    await _playAt(next, autoAdvance: true);
   }
 
   Future<void> previous() async {
@@ -691,6 +794,7 @@ class PlayerService extends ChangeNotifier {
     _completeSub?.cancel();
     _playlistSub?.cancel();
     _errSub?.cancel();
+    _logSub?.cancel();
     _player?.dispose();
     super.dispose();
   }

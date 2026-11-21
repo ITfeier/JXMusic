@@ -291,7 +291,15 @@ class NeteaseApi implements MusicPlatformApi {
         final first = list.first;
         if (first is! Map) continue;
         final url = first['url'] as String?;
-        if (url != null && url.isNotEmpty) return url;
+        // 真机修复（+43）：m80x/m70x 返回 http:// 明文直链，设备端 libmpv
+        // 打开失败（hilog 取证），统一升级 https（已验证同文件 200 可播）。
+        if (url != null && url.isNotEmpty) return jxUpgradeHttps(url);
+        // 播放失败诊断 P1（文案化）：code=-110 表示 VIP/需登录才有直链
+        // （2026-11 实测 fee=1 返回 -110），写入 lastError 供死链提示展示。
+        final code = (first['code'] as num?)?.toInt() ?? 0;
+        if (code == -110) {
+          _lastError = '该歌曲为网易云 VIP 歌曲，需登录会员账号播放';
+        }
       } catch (_) {}
     }
 
@@ -308,7 +316,7 @@ class NeteaseApi implements MusicPlatformApi {
       final first = dataList.first as Map<String, dynamic>;
       final url = first['url'] as String?;
       if (url == null || url.isEmpty) return null;
-      return url;
+      return jxUpgradeHttps(url);
     } catch (_) {
       return null;
     }
@@ -417,6 +425,31 @@ class NeteaseApi implements MusicPlatformApi {
       }).toList();
     } catch (_) {
       return const [];
+    }
+  }
+
+  /// 歌单元数据：v3/playlist/detail 的 playlist 对象
+  /// （name / coverImgUrl / trackCount，与 playlistSongs 同接口）。
+  @override
+  Future<Playlist?> playlistInfo(Playlist playlist) async {
+    try {
+      final resp = await JXHttp.dio.get('$_base/v3/playlist/detail',
+          queryParameters: {'id': playlist.id, 'n': '1000'},
+          options: Options(headers: {
+            'Cookie': _cookieStr(),
+            'Referer': 'https://music.163.com/',
+          }));
+      final detail = resp.data['playlist'] as Map<String, dynamic>?;
+      if (detail == null) return null;
+      return Playlist(
+        id: playlist.id,
+        platform: platform,
+        title: detail['name'] as String? ?? '',
+        coverUrl: jxNormalizeImageUrl(detail['coverImgUrl'] as String?),
+        songCount: (detail['trackCount'] as num?)?.toInt() ?? 0,
+      );
+    } catch (_) {
+      return null;
     }
   }
 
@@ -737,6 +770,13 @@ class NeteaseApi implements MusicPlatformApi {
   String? _qrHint;
   String? get qrHint => _qrHint;
 
+  bool _qrTerminal = false;
+
+  /// 最近一次扫码轮询是否为终态（800 过期 / 8821 风控，扫码修复 QA D-05）：
+  /// 终态再轮询无意义且可能加重风控，设置页据此提前停止轮询。
+  @override
+  bool get qrTerminal => _qrTerminal;
+
   static String _md5Hex(String text) =>
       md5.convert(utf8.encode(text)).toString();
 
@@ -819,6 +859,7 @@ class NeteaseApi implements MusicPlatformApi {
   Future<({String qrUrl, String key})> createQrLogin() async {
     _lastError = null;
     _qrHint = null;
+    _qrTerminal = false;
     final deviceId = _randomDeviceId();
     _qrDeviceId = deviceId;
     try {
@@ -860,20 +901,25 @@ class NeteaseApi implements MusicPlatformApi {
         case 801: // 等待扫码
           _qrHint = null;
           _lastError = null;
+          _qrTerminal = false;
           return null;
         case 802: // 已扫码，等待手机端确认/授权中
           _qrHint = '已扫码，请在手机上确认登录';
           _lastError = null;
+          _qrTerminal = false;
           return null;
         case 800: // 二维码过期
           _qrHint = null;
           _lastError = '二维码已过期，请关闭后重新获取';
+          _qrTerminal = true;
           return null;
         case 8821: // 风控 / 协议不符（2026-11 真机实扫出现过）
           _qrHint = null;
           _lastError = '账号或网络触发风控（code 8821），请稍后重试或更换网络';
+          _qrTerminal = true;
           return null;
         case 803: // 登录成功
+          _qrTerminal = false;
           break;
         default:
           _qrHint = null;

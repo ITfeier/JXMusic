@@ -474,10 +474,10 @@ class _HomePageState extends ConsumerState<HomePage> {
   Future<void> _resolveAndPlay(Song song, {List<Song>? queue}) async {
     final ok = await resolveAndPlay(ref, song, queue: queue);
     if (ok || !mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(
-          '「${song.title}」暂时无法播放：三个平台都没有可用的免费版本，可能需要登录对应平台或受版权限制'),
-    ));
+    jxShowNotice(
+        context,
+        '「${song.title}」暂时无法播放：三个平台都没有可用的免费版本，'
+        '可能需要登录对应平台或受版权限制');
   }
 }
 
@@ -615,6 +615,8 @@ class _AggRankCard extends StatelessWidget {
           for (var i = 0; i < (songs.length > maxRows ? maxRows : songs.length);
               i++)
             GestureDetector(
+              // opaque：整行（含文字旁留白/间隙）都响应点击播放
+              behavior: HitTestBehavior.opaque,
               onTap: () => onPlay(songs[i]),
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 6),

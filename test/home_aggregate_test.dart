@@ -27,12 +27,16 @@ class _FakePlatformApi extends MusicPlatformApi {
   @override
   final int platform;
 
+  /// 推荐歌单请求计数（聚合页「更新」三平台同时刷新回归用）
+  int recommendCalls = 0;
+
   @override
   Future<List<Song>> topSongs({int page = 1, int size = 30}) async => const [];
 
   @override
   Future<List<Playlist>> recommendPlaylists(
       {int page = 1, int size = 20}) async {
+    recommendCalls++;
     // 每平台 6 个可辨识歌单：歌单-{platform}-{i}
     return [
       for (var i = 1; i <= 6; i++)
@@ -156,6 +160,47 @@ void main() {
     expect(find.text('QQ音乐'), findsWidgets);
     expect(find.text('网易云'), findsWidgets);
     expect(find.text('酷狗'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('聚合页头部「更新」一次点击同时刷新三平台子页', (tester) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final hub = MusicApiHub();
+    final apis = [
+      for (final p in const [0, 1, 2]) _FakePlatformApi(p),
+    ];
+    for (final api in apis) {
+      hub.register(api);
+    }
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [musicHubProvider.overrideWithValue(hub)],
+        child: const MaterialApp(home: PlaylistHubPage()),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // IndexedStack 同时构建三个平台子页：首屏各请求 1 次
+    expect(apis[0].recommendCalls, 1);
+    expect(apis[1].recommendCalls, 1);
+    expect(apis[2].recommendCalls, 1);
+
+    // 头部「更新」按钮唯一（内嵌子页隐藏了各自刷新按钮）
+    final refreshBtn = find.byIcon(Icons.refresh_rounded);
+    expect(refreshBtn, findsOneWidget);
+    await tester.tap(refreshBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 一次点击 → 三平台同时各再刷 1 次（共 2 次），且无异常
+    expect(apis[0].recommendCalls, 2);
+    expect(apis[1].recommendCalls, 2);
+    expect(apis[2].recommendCalls, 2);
     expect(tester.takeException(), isNull);
   });
 }

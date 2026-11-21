@@ -258,10 +258,7 @@ class SettingsPage extends ConsumerWidget {
                 subtitle: 'Windows 与安卓共享歌单/收藏/历史',
                 value: false,
                 onChanged: (_) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('云端同步服务开发中，后续版本开放')),
-                  );
+                  jxShowNotice(context, '云端同步服务开发中，后续版本开放');
                 },
               ),
             ],
@@ -373,8 +370,7 @@ Future<void> _onAccountTap(
   if (confirmed != true || !context.mounted) return;
   ref.read(accountProvider(platform).notifier).logout();
   ref.read(musicHubProvider).api(platform)?.restoreSession(null);
-  ScaffoldMessenger.of(context)
-      .showSnackBar(SnackBar(content: Text('已退出$name登录')));
+  jxShowNotice(context, '已退出$name登录');
 }
 
 class _SectionLabel extends StatelessWidget {
@@ -622,13 +618,11 @@ Future<void> _showQrLogin(BuildContext context, WidgetRef ref, int platform) asy
   // 降级登录（如酷狗 token 交换失败）时接口层会写 lastError，这里如实提示用户
   final warning = api.lastError;
   final name = JXPlatform.name(platform);
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(
-      content: Text(warning != null && warning.trim().isNotEmpty
+  jxShowNotice(
+      context,
+      warning != null && warning.trim().isNotEmpty
           ? '$name 已登录（${account.nickname}），但$warning'
-          : '$name登录成功：${account.nickname}'),
-    ),
-  );
+          : '$name登录成功：${account.nickname}');
 }
 
 /// 平台扫码登录对话框（玻璃卡片风格）
@@ -748,6 +742,19 @@ class _QrLoginDialogState extends State<_QrLoginDialog> {
         setState(() => _hint = detail != null && detail.trim().isNotEmpty
             ? detail
             : 'QQ 扫码已确认，但换取登录态失败，请关闭后重新获取二维码');
+        return;
+      }
+      // 终态（二维码已过期等）：继续轮询无意义，提前停止、不必空转到 2 分钟
+      // （QA D-05：网易云 800/8821、QQ 65、酷狗 status=0 都会置位 qrTerminal）。
+      if (widget.api.qrTerminal) {
+        _done = true;
+        _timer?.cancel();
+        final detail = widget.api.lastError;
+        debugPrint('[JXMusic][扫码登录] 二维码终态，停止轮询：'
+            'lastError=${detail ?? '-'}');
+        setState(() => _hint = detail != null && detail.trim().isNotEmpty
+            ? detail
+            : '二维码已过期，请关闭后重新获取');
         return;
       }
       // 等待态不覆盖提示；接口层明确报错（如过期/参数变更）时展示准确原因，
@@ -895,9 +902,7 @@ Future<void> _showPasswordLogin(
   ref.read(accountProvider(platform).notifier).login(account);
   ref.read(musicHubProvider).api(platform)?.restoreSession(account);
   final name = JXPlatform.name(platform);
-  ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text('$name登录成功：${account.nickname}')),
-  );
+  jxShowNotice(context, '$name登录成功：${account.nickname}');
 }
 
 /// 账号密码登录对话框（玻璃卡片风格；密码仅用于本次请求，不落盘）

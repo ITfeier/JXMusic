@@ -24,9 +24,10 @@ import 'package:jxmusic/ui/playlist_row.dart';
 ///    纯数字歌单 id 全部识别，垃圾输入返回 null；
 /// 2. [MusicApiHub.userPlaylists]：三平台结果轮询交错（QQ/网易云/酷狗
 ///    A1,B1,C1,A2…），平台缺数据时其余平台自动补位；
-/// 3. 音乐库五个 tab 齐全（收藏/历史/收藏歌单/歌单/下载）；
-/// 4. 「收藏歌单」tab 聚合展示三平台登录账号歌单，点卡片进歌单详情；
-/// 5. 未登录任何平台时「收藏歌单」给出登录引导文案，不白屏；
+/// 3. 音乐库一级「音乐 / 歌单 / 下载」三个等宽 tab，音乐内二级「收藏/历史」、
+///    歌单内二级「收藏/创建」（2026-11-18 重排）；
+/// 4. 歌单「收藏」二级聚合展示三平台登录账号歌单，点卡片进歌单详情；
+/// 5. 未登录任何平台时歌单「收藏」二级给出登录引导文案，不白屏；
 /// 6. 「导入歌单」：粘贴分享链接 → 拉取歌单歌曲 → 存为本地自建歌单。
 ///
 /// 全程不联网：fake MusicPlatformApi 返回固定数据；播放器用
@@ -182,6 +183,20 @@ void main() {
       expect(parsed.id, '66677');
     });
 
+    test('酷狗：m.kugou.com/songlist/gcid_XXX/ 路径形态（App 分享链接）', () {
+      final parsed = parseJXPlaylistLink(
+          'https://m.kugou.com/songlist/gcid_3zivrucnzoz01f/?src_cid=3zivrucnzoz01f');
+      expect(parsed!.platform, JXPlatform.kugou);
+      expect(parsed.id, '3zivrucnzoz01f');
+    });
+
+    test('酷狗：?global_collection_id= 字母数字 gcid 参数形态', () {
+      final parsed = parseJXPlaylistLink(
+          'https://t1.kugou.com/x.html?global_collection_id=3zivrucnzoz01f');
+      expect(parsed!.platform, JXPlatform.kugou);
+      expect(parsed.id, '3zivrucnzoz01f');
+    });
+
     test('纯数字：按网易云歌单 id 处理', () {
       final parsed = parseJXPlaylistLink(' 123456789 ');
       expect(parsed!.platform, JXPlatform.netease);
@@ -283,19 +298,19 @@ void main() {
       ..register(_FakePlatformApi(1))
       ..register(_FakePlatformApi(2));
 
-    testWidgets('五个 tab 齐全；收藏歌单聚合三平台并轮询交错；点卡片进歌单详情',
+    testWidgets('一级三 tab + 音乐二级；歌单「收藏」聚合三平台并轮询交错；点卡片进歌单详情',
         (tester) async {
       await pumpLibrary(tester, hub: loggedInHub());
 
-      // 回归点 3：五个 tab chip
+      // 回归点 3：一级「音乐 / 歌单 / 下载」一排三个；音乐二级「收藏/历史」
+      expect(find.text('音乐'), findsOneWidget);
+      expect(find.text('歌单'), findsOneWidget);
+      expect(find.text('下载'), findsOneWidget);
       expect(find.textContaining(RegExp('^收藏 ')), findsOneWidget);
       expect(find.textContaining(RegExp('^历史 ')), findsOneWidget);
-      expect(find.text('收藏歌单'), findsOneWidget);
-      expect(find.textContaining(RegExp('^歌单 ')), findsOneWidget);
-      expect(find.textContaining(RegExp('^下载 ')), findsOneWidget);
 
-      // 切到「收藏歌单」
-      await tester.tap(find.text('收藏歌单'));
+      // 切到一级「歌单」→ 二级默认「收藏」→ 三平台账号歌单聚合
+      await tester.tap(find.text('歌单'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -326,7 +341,7 @@ void main() {
         ..register(_FakePlatformApi(2, loggedIn: false));
       final container = await pumpLibrary(tester, hub: hub, loggedIn: const {});
 
-      await tester.tap(find.text('收藏歌单'));
+      await tester.tap(find.text('歌单'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -363,7 +378,7 @@ void main() {
       await pumpLibrary(tester,
           hub: hub, loggedIn: const {JXPlatform.qq});
 
-      await tester.tap(find.text('收藏歌单'));
+      await tester.tap(find.text('歌单'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -388,7 +403,7 @@ void main() {
         ..register(_FakePlatformApi(2, sessionError: '登录已过期，请重新登录'));
       final container = await pumpLibrary(tester, hub: hub);
 
-      await tester.tap(find.text('收藏歌单'));
+      await tester.tap(find.text('歌单'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
@@ -412,7 +427,7 @@ void main() {
       expect(store.collectedPlaylists, isEmpty);
 
       // 进「收藏歌单」tab → 点第一张卡片进歌单详情
-      await tester.tap(find.text('收藏歌单'));
+      await tester.tap(find.text('歌单'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(find.text('我的歌单-0-1'));
@@ -475,7 +490,11 @@ void main() {
           await pumpLibrary(tester, hub: loggedInHub());
       final store = container.read(libraryProvider);
 
-      await tester.tap(find.textContaining(RegExp('^歌单 ')));
+      // 切到一级「歌单」→ 二级「创建」（导入/新建按钮在此）；360dp 窄屏下
+      // 头部是图标按钮（Tooltip 保留文字语义）
+      await tester.tap(find.text('歌单'));
+      await tester.pump();
+      await tester.tap(find.textContaining(RegExp('^创建 ')));
       await tester.pump();
       await tester.tap(find.byIcon(Icons.download_rounded));
       await tester.pump();
@@ -507,8 +526,11 @@ void main() {
       final store = container.read(libraryProvider);
       expect(store.playlists, isEmpty, reason: '测试前置：本地没有自建歌单');
 
-      // 切到「歌单」tab；360dp 窄屏下头部是图标按钮（Tooltip 保留文字语义）
-      await tester.tap(find.textContaining(RegExp('^歌单 ')));
+      // 切到一级「歌单」→ 二级「创建」；360dp 窄屏下头部是图标按钮
+      // （Tooltip 保留文字语义）
+      await tester.tap(find.text('歌单'));
+      await tester.pump();
+      await tester.tap(find.textContaining(RegExp('^创建 ')));
       await tester.pump();
       expect(find.byIcon(Icons.download_rounded), findsOneWidget);
       expect(find.byIcon(Icons.add_rounded), findsOneWidget);

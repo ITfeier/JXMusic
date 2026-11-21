@@ -144,6 +144,79 @@ void main() {
     await _unmount(tester);
   });
 
+  testWidgets('点击主体区域在封面/歌词间切换（倍速按钮移除后的新交互）',
+      (tester) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 3.0;
+    tester.view.padding =
+        const FakeViewPadding(top: 72, bottom: 144); // 状态栏 24 / 导航栏 48dp
+    addTearDown(tester.view.reset);
+
+    await _pumpPlayerPage(tester);
+
+    // 初始为封面（黑胶唱片）
+    expect(find.byType(JXVinylDisc), findsOneWidget);
+    expect(find.byKey(const ValueKey('lyrics')), findsNothing);
+
+    // 点击封面主体 → 切到歌词
+    await tester.tap(find.byType(JXVinylDisc));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const ValueKey('lyrics')), findsOneWidget,
+        reason: '点击封面区域应切换到歌词视图');
+
+    // 点击歌词主体 → 切回封面
+    await tester.tap(find.byKey(const ValueKey('lyrics')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(JXVinylDisc), findsOneWidget,
+        reason: '点击歌词区域应切回封面视图');
+
+    await _unmount(tester);
+  });
+
+  testWidgets('控制行最右槽位是播放队列按钮：与循环按钮对齐且点击打开弹层',
+      (tester) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 3.0;
+    tester.view.padding =
+        const FakeViewPadding(top: 72, bottom: 144); // 状态栏 24 / 导航栏 48dp
+    addTearDown(tester.view.reset);
+
+    await _pumpPlayerPage(tester);
+
+    // 播放队列按钮在控制行最右槽位（弹层未打开时全页仅此一个 queue_music 图标）
+    final queueIcon = find.byIcon(Icons.queue_music_rounded);
+    expect(queueIcon, findsOneWidget, reason: '控制行最右应是播放队列按钮');
+    expect(find.byIcon(Icons.lyrics_rounded), findsNothing,
+        reason: '歌词切换按钮已按需求移除');
+
+    // 对齐断言：与最左的循环模式按钮同一水平行（垂直居中一致），
+    // 且位于主播放键右侧（右下角槽位）
+    final loopIcon = find.byIcon(Icons.repeat_rounded);
+    expect(loopIcon, findsOneWidget);
+    final queueCenter = tester.getCenter(queueIcon);
+    final loopCenter = tester.getCenter(loopIcon);
+    expect(queueCenter.dy, closeTo(loopCenter.dy, 0.5),
+        reason: '队列按钮应与循环按钮垂直对齐');
+    final playIcon = find.byIcon(Icons.play_arrow_rounded);
+    expect(playIcon, findsOneWidget);
+    expect(queueCenter.dx, greaterThan(tester.getCenter(playIcon).dx),
+        reason: '队列按钮应在主播放键右侧（控制行最右槽位）');
+    expect(queueCenter.dx, greaterThan(360 * 0.5),
+        reason: '队列按钮应在屏幕右半侧');
+
+    // 点击打开播放队列弹层（_QueueSheet：标题带歌曲数 + 清空按钮）
+    await tester.tap(queueIcon);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.textContaining('播放队列'), findsOneWidget,
+        reason: '点击队列按钮应弹出播放队列弹层');
+    expect(find.text('清空队列'), findsOneWidget);
+
+    await _unmount(tester);
+  });
+
   group('jxPlayerCoverSize（按可用高度自适应封面）', () {
     test('桌面大窗口维持 300 上限', () {
       expect(

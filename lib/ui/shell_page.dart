@@ -13,6 +13,7 @@ import 'search_page.dart';
 import 'local_page.dart';
 import 'settings_page.dart';
 import 'player/player_bar.dart';
+import 'glass.dart';
 import 'layout.dart';
 
 /// 主界面壳（双端独立布局）：
@@ -43,9 +44,22 @@ class ShellPage extends ConsumerWidget {
         if (next == null || next.isEmpty || next == previous) return;
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!context.mounted) return;
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(next)));
+          jxShowNotice(context, next);
           ref.read(playerServiceProvider).clearResolutionError();
+        });
+      },
+    );
+
+    // 跨平台兜底换歌提示（播放失败诊断 P1）：原平台不可播自动换其它平台版本时，
+    // 全局 SnackBar 提示一次，不再静默换歌（此前只有搜索页提示）。
+    ref.listen<String?>(
+      playerServiceProvider.select((p) => p.lastSourceSwitchNotice),
+      (previous, next) {
+        if (next == null || next.isEmpty || next == previous) return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!context.mounted) return;
+          jxShowNotice(context, next);
+          ref.read(playerServiceProvider).clearSourceSwitchNotice();
         });
       },
     );

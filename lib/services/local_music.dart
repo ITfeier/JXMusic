@@ -252,7 +252,7 @@ class LocalMusicService {
       }
       album = meta.album ?? '';
       duration = (meta.duration?.inSeconds) ?? 0;
-      cover = await _extractCover(meta);
+      cover = await extractCover(meta);
     } catch (_) {}
     // 只回退标签缺失的字段（评审 R-18）：标签 title 存在时不能用文件名覆盖。
     final merged = mergeFileNameFallback(
@@ -352,7 +352,7 @@ class LocalMusicService {
       final metaAlbum = meta.album?.trim();
       if (metaAlbum != null && metaAlbum.isNotEmpty) album = metaAlbum;
       duration = (meta.duration?.inSeconds) ?? duration;
-      final extractedCover = await _extractCover(meta);
+      final extractedCover = await extractCover(meta);
       if (extractedCover.isNotEmpty) cover = extractedCover;
       return song.copyWith(
         title: title,
@@ -441,7 +441,10 @@ class LocalMusicService {
 
   /// 把音频文件内嵌的封面（ID3 APIC / FLAC PICTURE 等）落到本地缓存文件，
   /// 返回文件路径供 UI 显示；同专辑共用同一张缓存图，没有封面返回空串。
-  Future<String> _extractCover(AudioMetadata meta) async {
+  ///
+  /// 公开给系统导入（ohos_system_music.dart）复用：导入歌曲与沙盒扫描歌曲
+  /// 的封面缓存策略保持一致（同 key 去重 + 数量上限）。
+  Future<String> extractCover(AudioMetadata meta) async {
     final pictures = meta.pictures;
     if (pictures.isEmpty) return '';
     final bytes = pictures.first.bytes;

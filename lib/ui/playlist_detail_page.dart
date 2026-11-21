@@ -68,13 +68,19 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
 
   Future<void> _playAll() async {
     if (_songs.isEmpty) return;
-    final ok = await resolveAndPlay(ref, _songs.first, queue: _songs);
-    if (!ok && mounted) _toastPlayFailed();
+    await _play(_songs.first);
   }
 
   Future<void> _play(Song song) async {
+    // 快照法（freshApiError）：resolveAndPlay 内部跨平台兜底会触发多个平台
+    // getPlayUrl，这里只取本平台「本次新增」的失败原因，不读陈旧 lastError。
+    final api = ref.read(musicHubProvider).api(song.platform);
+    final before = api?.lastError;
     final ok = await resolveAndPlay(ref, song, queue: _songs);
-    if (!ok && mounted) _toastPlayFailed();
+    if (ok || !mounted) return;
+    final fresh =
+        api == null ? null : freshApiError(before, api.lastError);
+    _toastPlayFailed(song, fresh);
   }
 
   /// 收藏 / 取消收藏歌单（本机），音乐库「收藏歌单」tab 顶部展示
@@ -82,16 +88,24 @@ class _PlaylistDetailPageState extends ConsumerState<PlaylistDetailPage> {
     final store = ref.read(libraryProvider);
     final added = store.toggleCollectedPlaylist(widget.playlist);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content:
-          Text(added ? '已收藏「${widget.playlist.title}」' : '已取消收藏'),
-    ));
+    jxShowNotice(
+        context, added ? '已收藏「${widget.playlist.title}」' : '已取消收藏');
   }
 
-  void _toastPlayFailed() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台')),
-    );
+  /// 播放失败提示：优先展示平台 API 本次给出的具体原因（VIP/付费/版权/登录态
+  /// 过期），只有「未登录且是 VIP 歌」才提示先登录——已登录用户不再被误导
+  /// 「需要先在设置里登录」（真机反馈：绿钻账号老被提示需要登录）。
+  void _toastPlayFailed(Song song, String? freshReason) {
+    final name = JXPlatform.name(song.platform);
+    final loggedIn = ref.read(accountProvider(song.platform)) != null;
+    if (song.vip && !loggedIn) {
+      jxShowNotice(context, '需要先登录$name才能播放 VIP 音源');
+      return;
+    }
+    final detail = (freshReason == null || freshReason.trim().isEmpty)
+        ? (loggedIn ? '该歌曲在$name及跨平台均无可用音源' : '可能需要登录$name或受版权限制')
+        : freshReason;
+    jxShowNotice(context, '「${song.title}」无法播放：$detail');
   }
 
   @override

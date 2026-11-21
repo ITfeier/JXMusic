@@ -137,4 +137,49 @@ void main() {
         reason: '热歌-1-1 是聚合榜交错序的第 2 首（索引 1）');
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('聚合榜行内空白区域点击也能播放（整行可点，不只文字/按钮）',
+      (tester) async {
+    tester.view.physicalSize = const Size(1080, 1920);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+
+    final hub = MusicApiHub()
+      ..register(_FakePlatformApi(0))
+      ..register(_FakePlatformApi(1))
+      ..register(_FakePlatformApi(2));
+    final player = PlayerService(initPlayer: false);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          musicHubProvider.overrideWithValue(hub),
+          playerServiceProvider.overrideWith((ref) => player),
+        ],
+        child: const MaterialApp(home: Scaffold(body: HomePage())),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.scrollUntilVisible(
+      find.text('热歌-0-1'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pump();
+
+    // 点第一行标题文字右侧的空白处：修复前 GestureDetector 默认
+    // deferToDefault，该点不属于任何可命中子组件，点击无效；
+    // 修复后 behavior: HitTestBehavior.opaque 整行命中触发播放。
+    final titleRect = tester.getRect(find.text('热歌-0-1'));
+    await tester.tapAt(Offset(titleRect.right + 40, titleRect.center.dy));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(player.currentSong?.title, '热歌-0-1',
+        reason: '点行内空白区域也应触发播放');
+    expect(player.queue.length, 60, reason: '整单进队列行为不变');
+    expect(tester.takeException(), isNull);
+  });
 }

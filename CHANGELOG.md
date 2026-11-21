@@ -1,5 +1,338 @@
 # CHANGELOG
 
+## 0.11.0+46 — 2026-11-20
+
+### 功能（QQ VIP/付费歌曲自动解析官方试听版）
+
+- **需求**：付费音乐和 VIP 音乐都有官方试听版本——需要 VIP/付费的歌曲在完整版无权益时自动解析为试听版播放，而不是直接失败/跳过。
+- **调研（探针实测，2026-11，匿名）**：
+  - **QQ**：`CgiGetVkey` 同接口显式带 `filename: ['RS02{songmid}.mp3']`（RS02 = QQ 官方试听文件前缀，与官方 web 播放器对未购用户提供的试听同口径）即可签发试听 vkey——VIP（晴天 `0039MnYb0qxYhV`）与付费数字专辑（最伟大的作品 `003w2xz20QlUZt`）均可下载 960887 字节 mp3（帧头 `fffb`，≈60.1s@128kbps）；不带 filename 或 M500/M800 前缀 purl 均为空；
+  - **网易云**：`/api/song/enhance/player/url`（含 weapi/v1 三通道）匿名一律 `url=null`（code 404）、无 `freeTrialInfo`——试听由服务端按账号权益决定（已登录非会员若获发试听，现有代码已能直接透传播放），无公开试听端点可主动解析，本次不改；
+  - **酷狗**：公开端点全部试尽（getSongInfo 各变体 / `trans_param.hash_offset.clip_hash`（60s 试听片段官方 hash，直查 data not found）/ offset_hash / `gateway.kugou.com/v5/url`（502）/ 公开 salt 签名 `play/songinfo` 与 m3ws `get_play_info`（30020 参数错/No Action））——官方客户端走私有签名接口，试听暂不支持。
+- **实现**：
+  - `qq_api` `getPlayUrl`：完整版 purl 为空（未登录/权益过期/无版权直链）时，不再直接 return null——改带 RS02 试听 filename 重发同一 musicu 请求，解析出官方 60 秒试听直链（sip+purl，过 `jxUpgradeHttps`）即返回播放；无试听/请求失败维持原有 `lastError` 文案不变；
+  - 覆盖全部播放路径（手动点歌 `resolveAndPlay` / 自动切歌 PlayerService `urlResolver` / 播放中切源 `switchSource`）——试听兜底在 `getPlayUrl` 内完成，自动切歌 VIP 歌不再无声跳过；
+  - 试听解析全程落 `[JXMusic][QQ播放]` 日志（OK/无试听/异常），真机 hilog 可观测兜底命中情况；
+  - 合规口径：试听=平台官方提供给未购用户的预览内容（QQ 官方 web 播放器同款 RS02 文件），完整版仍需会员/购买，不绕过任何付费限制。
+- **测试**：`qq_trial_request_test` +6（RS02 试听 filename 构造；请求体 guid/songmid/uin/双请求结构；响应解析 sip+purl 拼接升 https / purl 空返回 null / midurlinfo 缺失返回 null / sip 缺失退化纯 purl）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：511/511 全绿（505 + 6 新增）。
+
+## 0.11.0+45 — 2026-11-20
+
+### 修复（QQ 播放失败提示误导「需要登录」+ 失败原因诊断）
+
+- **痛点（真机反馈）**：QQ 歌单点歌失败时一律提示「无法播放：该歌曲可能需要先在设置里登录对应平台」——已登录豪华绿钻的用户被严重误导；同时「暂无音源已跳过 / 播放失败 / 已切换其他音源」等失败没有任何可定位的原因。
+- **实现**：
+  - `playlist_detail_page`：点歌/播放全部失败不再写死「需要先登录」——快照法（`freshApiError`）取平台本次新增的 `lastError` 作为具体原因展示；只有「未登录且是 VIP 歌」才提示「需要先登录XX才能播放 VIP 音源」；已登录用户兜底文案为「该歌曲在XX及跨平台均无可用音源」；
+  - `qq_api` `getPlayUrl`：新增 `[JXMusic][QQ播放]` 诊断日志（print，与既有 `_log` 同口径，不引入 Flutter 依赖保证 `dart run tool/*` 可执行）——每次解析输出 songmid/vip/uin（打码）/已带 cookie；purl 为空、midurlinfo 缺失、解析异常均落日志，真机 hilog 可区分「未带登录态 / 登录态过期 / 服务端无音源」；
+  - `qq_api` purl 为空时按登录态细分 `lastError`：带登录态 + VIP 歌 → 「若长时间未登录请尝试重新登录」（指向 musickey 过期）；带登录态 + 非 VIP → 「版权受限」；未登录 → 维持 +43 文案。
+- **测试**：`playlist_detail_page_test` +2（未登录点 VIP 歌提示「需要先登录XX」；点歌失败展示平台具体原因且不再出现「需要先在设置里登录」误导文案）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：504/504 全绿（502 + 2 新增）。
+
+## 0.11.0+44 — 2026-11-20
+
+### 调整（全部歌单：随机更新 + 三平台同时刷新）
+
+- **痛点**：「更多歌单」聚合页每次刷新固定拉 `page=1`，而三平台推荐位第一页内容长期不变——用户每次点更新/进页看到的永远是同一批旧歌单。
+- **实现**：
+  - `playlist_list_page`：首屏起始页默认 **1~10 随机**（`randomStartPage` 可注入固定值供测试），滑到底从起始页顺序续拉下一页；随机页越界（服务端已无更多、返回空）自动回退 page=1，不误报「暂无歌单」；State 改公开 `PlaylistListPageState`，新增 `refresh()`（回顶 + 重新随机起始页加载）；内嵌聚合页时（`showBack=false`）隐藏页内刷新按钮，由聚合页头部统一触发；
+  - `playlist_hub_page`：头部新增「更新」按钮——一次点击通过 per-platform `GlobalKey` 同时触发三平台子页 `refresh()`（各自随机起始页、并行请求），满足「所有歌单同步更新、同时更新、随机更新」；
+  - 三平台分页口径不变（QQ sin/ein、网易云 offset、酷狗 page），随机区间 1~10 各平台均有稳定数据。
+- **测试**：`playlist_list_page_test` +2（随机起始页=3 首屏渲染第 3 页/续拉第 4 页；随机页越界回退第 1 页不误报空态）；`home_aggregate_test` +1（聚合页「更新」一次点击三平台 `recommendCalls` 各 +1，刷新按钮唯一）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：502/502 全绿（499 基线 + 3 新增）。
+
+## 0.11.0+43 — 2026-11-19
+
+### 修复（真机在线歌曲播放失败：completed=false 级联切歌 + 直链 https 升级 + 静默失败提示）
+
+- **真根因（+43 第二轮 hilog 取证 + mpv warn 级日志）**：media_kit 在 mpv `START_FILE`（开始加载新文件）时会向 `completed` 流发 `false`，应用订阅回调不判值直接 `_onTrackComplete()`——**每次 open 新歌都立刻被误切到下一首**，级联中止所有进行中的加载（产生大量「Failed to open」假错误，且错误归属错位触发错误重试交叉干扰）、一路跳到队尾才停。表现即真机反馈：网易云歌单「点了没反应」（队尾歌 http 直链也打不开 → 全程无声）、QQ 歌单「大量跳过」。
+- **实现**：
+  - `player_service`：`completed` 流回调改为只对 `completed=true`（eof-reached 真播完）触发 `_onTrackComplete`；新增 `@visibleForTesting onCompletedEvent` 供回归测试注入；`queue_auto_advance_test` 新增 START_FILE 回归（completed=false 不切歌 / true 正常切）；
+  - `http.dart` 新增 `jxUpgradeHttps`：音频直链 `http://` 统一升级 `https://`（三家 CDN 实测均支持：m80x.music.126.net / aqqmusic.tc.qq.com / sharefs.kugou.com 同文件明文与 https 均 200）——修复队尾歌 http 直链真打不开的问题；
+  - `netease_api`/`qq_api`/`kugou_api` 的 `getPlayUrl` 返回直链全部过 `jxUpgradeHttps`；
+  - `player_service` `_onPlayerError`：重试一次后仍打开失败不再静默停止——提示「播放失败，已跳过」并按死链 autoAdvance 语义跳下一首（队尾则提示后停下），消除「点了没反应」的无声路径；
+  - `player_service` 新增 mpv warn/error 细节日志订阅（`logLevel: warn`），ffmpeg/lavf 层错误转 debugPrint 进 hilog（本轮正是靠它定位到「Failed to create file cache」与级联时序）；
+  - `qq_api` `getPlayUrl` purl 为空（VIP/付费无权益或无版权）时写 `lastError`（「暂无可用音源（VIP/付费歌曲或版权受限）」），死链提示不再无原因。
+- **测试**：`residual_fixes_test` 酷狗免费歌直链断言更新为 https 升级后值；`queue_auto_advance_test` +1 条 START_FILE 级联回归；删除 4 个临时诊断脚本（diag_play / diag_netease_pl / diag_netease_cdn / diag_https_upgrade）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：499/499 全绿（4 跳过为需联网用例；+1 START_FILE 级联回归）。
+
+## 0.11.0+42 — 2026-11-19
+
+### 调整（底部提示条：悬浮玻璃胶囊通知）
+
+- **痛点**：全 app 底部弹出的提示（版权/换源/导入/登录/收藏/建歌单等）原先走 Material 默认 SnackBar——贴边扁平暗色条，与全 app 液态玻璃语言割裂。
+- **实现**：
+  - `glass.dart` 新增统一入口 `jxShowNotice(context, message, {duration?})`：`floating` 行为 + 透明外壳（`backgroundColor: transparent` + `elevation: 0` + `padding: zero`），本体 `_GlassNotice` 自绘玻璃胶囊——阴影 → `ClipRRect` → `BackdropFilter`(blur 18) → 渐变玻璃容器 + 1px 描边 + Row（info 图标 + 文案），左右 16 / 底 12 margin 悬浮于屏幕底部边缘；
+  - 替换全部 21 处调用点：home、search、library、local、media_songs、my_playlist、playlist_detail、player（×2）、settings（×4）、shell（×2）；
+  - `theme.dart` 增加 `snackBarTheme` 兜底（未来裸 SnackBar 也呈悬浮玻璃观感，`jxShowNotice` 自带完整胶囊逐项覆盖主题值）。
+- **回退**：+41「底部悬浮坞」经确认为需求理解偏差（本需求实为「通知条悬浮」而非「底栏悬浮」），全部回退——`shell_page` 还原 `Column`、`layout.dart` 删 `kJxMobileDockHeight`/`jxDockBottomReserve`、`player_bar` 边距还原、五页滚动 padding 还原、删除 `bottom_dock_test`。
+- **测试**：新增 `notice_test`（2 条）：悬浮玻璃胶囊（脱离左右/底边缘 + `BackdropFilter` 模糊本体 + floating/透明/零投影外壳 + 默认 4s 自动消失）、自定义时长到时自动消失；既有测试提示断言均为 `find.text(...)`，内容不变全部通过。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**498/498 全绿**（4 跳过为需联网用例；+3）。
+
+## 0.11.0+41 — 2026-11-19（已回退，见 +42）
+
+### 调整（手机端底部悬浮坞：真·悬浮）
+
+- **痛点**：手机端底部迷你播放条 + 底部 Tab 原先是 `Column` 布局——底栏占据布局空间、内容在它们上方结束，玻璃卡后面没有滚过的内容，「悬浮」只是视觉近似。
+- **实现**：
+  - `MobileShellBody` 改为 `Stack`：五个 tab 页内容全屏铺满、延伸到屏幕底部，迷你播放条 + 底部玻璃 Tab 以悬浮坞方式覆盖其上——内容在毛玻璃后滚动，与全 app 玻璃卡片语言一致；
+  - 新增 `kJxMobileDockHeight`（156dp）/ `jxDockBottomReserve`（layout.dart）：各 tab 页滚动底部预留悬浮坞高度 + 系统手势区 + 呼吸间距，最后一项能滚出悬浮坞（桌面布局无悬浮坞，返回各页原值，桌面零变化）；
+  - 首页/搜索/音乐库/本地/设置五个 tab 页的滚动底部留白全部接入 `jxDockBottomReserve`；
+  - 迷你播放条外边距对称化 `(12, 6, 16, 12)` → `(12, 6, 12, 8)`，与底部 Tab 衔接更紧凑（含歌单详情页自带播放条）；
+  - 顶部安全区仍在壳层统一避让一次（`MobilePageSafeArea` 不变），整页路由（歌单详情/搜索结果等全屏页）不受影响。
+- **测试**：新增 `bottom_dock_test`（3 条）：内容铺满全屏到底部且悬浮坞覆盖其上、悬浮坞避让系统底部手势区、滚动预留含悬浮坞高度；既有 `top_safe_area`（壳层接线）与 `top_safe_area_acceptance`（G1~G4 验收矩阵）全部通过。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**499/499 全绿**（4 跳过为需联网用例；+4）。
+
+## 0.11.0+40 — 2026-11-19
+
+### 修复（首页聚合卡：整行可点播放）
+
+- **痛点**：手机版首页「三平台热歌聚合」/「猜你喜欢」卡片的歌曲行，点击行内空白区域（文字右侧留白、间隙、上下 padding）无响应，体感上「只能点行尾播放图标」。
+- **根因**：行 `GestureDetector` 默认 `deferToDefault` 命中行为，child 为 `Padding`/`Row`（自身不可命中），只有文字、图标等实际渲染处可点。
+- **修复**：`_AggRankCard` 行 `GestureDetector` 加 `behavior: HitTestBehavior.opaque`，整行任意位置点击均触发播放；全 app 其余歌曲行（搜索/歌单/本地/收藏/历史/下载/队列/音源面板）已是 `ListTile`/`GlassCard`(InkWell)/`SongRow`(带 decoration 容器) 整行可点，无需改动。
+- **测试**：`home_queue_test` 新增「行内空白区域点击也能播放」回归用例（点标题右侧留白处，旧行为点击无效、新行为正常播放且整单进队列）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**495/495 全绿**（4 跳过为需联网用例；+1）。
+
+## 0.11.0+39 — 2026-11-19
+
+### 调整（本地页：移除「扫描目录」按钮）
+
+- **痛点**：「扫描目录」按钮 + 目录管理弹层路径过深，实际使用中几乎不碰（打开页面已自动扫描）；鸿蒙端系统目录不可扫，按钮更是无用。
+- **实现**（全平台移除）：
+  - 本地页右上角「扫描目录」按钮删除，鸿蒙端只保留「导入」，Android/桌面端头部不再有按钮；
+  - 目录管理底部弹层（`_DirectoryManagerSheet`）、手动输入目录对话框、`dir_browser.dart` 目录浏览器整体删除（死代码）；
+  - 扫描行为不变：打开页面时 `autoScan` 自动扫描已配置目录；`LocalPathsStore.load` 首次使用仍会自动 seed 默认候选目录（Android 常用目录 / 桌面 Music、Downloads），此前已配置的目录继续生效，仅不再提供手动增删入口；
+  - 空态/页头文案同步去掉「点扫描目录添加」引导（改为「打开页面自动扫描已配置目录」）。
+- **测试**：`local_page_test` 删除目录弹层用例，其余用例改走 `autoScan: true` 自动扫描路径；新增「扫描目录按钮不存在」回归断言。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**494/494 全绿**（4 跳过为需联网用例；-1）。
+
+## 0.11.0+38 — 2026-11-19
+
+### 新增（鸿蒙本地页「导入系统音乐」）
+
+- **痛点**：鸿蒙系统目录（`/storage/Users/.../Music` 等）不允许应用直接扫描，此前鸿蒙端本地页始终无歌可听，只能靠应用沙盒目录。
+- **实现**（DocumentViewPicker 方案，AudioViewPicker/文件夹选择因 API 版本或持久化限制弃用）：
+  - 原生端新增 `JxFileAccessPlugin.ets`（`jxmusic/file_access` 通道）：`pickAudio`（DocumentViewPicker 多选、`fileSuffixFilters` 过滤 mp3/flac 等）→ `persistUris`/`activateUris`/`revokeUris`（`fileShare` 授权持久化/激活/撤销）→ `openFd`/`closeFd`（URI 转 fd）；`module.json5` 声明 `ohos.permission.FILE_ACCESS_PERSIST`。
+  - Dart 端新增 `OhosFileAccess`（通道客户端；`openFdUrl` 打开失败先激活持久化授权再重试一次自愈；`readMetadataByUri` 经 `/proc/self/fd/<fd>` 直接读标签+封面，不复制进沙盒）与 `OhosSystemMusicService`（导入记录持久化到 Hive `jx_settings` 的 `ohos_system_tracks`：导入=多选→持久化授权→逐个解析标签（失败回退「歌手 - 歌名」文件名，复用 `mergeFileNameFallback`）→落盘；`loadSongs` 重启后激活授权；`removeSong` 撤销授权+删记录）。
+  - 本地页：右上角「导入」按钮（仅鸿蒙显示）+ 空态导入引导文案；系统导入歌曲排在扫描结果之前合并展示，导入进度实时显示在页头摘要；长按系统歌曲弹「移除导入歌曲」确认（只移除记录与授权，不动系统原文件）。
+  - 播放：系统歌曲 `audioUrl` 存系统 URI 本身，providers 的 urlResolver 经 `openFdUrl` 转 `fd://<fd>` 交给 libmpv（media_kit 的 fd:// 为一等 scheme，fd 所有权移交 mpv）；授权持久化失败不阻断导入（本次会话临时授权仍可播）。
+- **测试**：新增 `ohos_system_music_test` 12 条（记录序列化/URI 文件名解析；导入标签解析、文件名回退、重复跳过、持久化失败不阻断、取消、移除撤销；本地页 ohos 导入入口/长按移除/非 ohos 隐藏入口）。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**495/495 全绿**（4 跳过为需联网用例；+12）。
+
+## 0.11.0+37 — 2026-11-19
+
+### 调整（播放页控制行：歌词按钮换成播放队列按钮）
+
+- **痛点**：播放队列此前藏在右上角「更多（⋯）」菜单二级路径里，切队列要多点两步；而歌词/封面切换已有「点击主体」这一更直接的入口，控制行右下角的歌词按钮显得冗余。
+- **实现**：
+  - 控制行最右槽位的「歌词切换」按钮移除（点击主体/歌词区切换封面 ↔ 歌词成为唯一切换入口，交互不变）；
+  - 播放队列按钮（`Icons.queue_music_rounded`）放进该槽位，与循环/上下曲等按钮同一水平行、等宽均分对齐，点击直接打开队列弹层（`_QueueSheet`）；
+  - 控制行布局维持 5 槽位（循环 / 上一曲 / 播放 / 下一曲 / 队列），主播放键保持水平居中；
+  - 「更多」菜单里的「播放队列」项保留，内部复用同一 `_showQueueSheet` 入口。
+- **测试**：`player_page_layout_test` 队列按钮回归更新（与循环按钮垂直对齐、位于主播放键右侧、点击弹层）；`vinyl_disc_test` 歌词面板切换改走点击黑胶封面；全量 480 用例。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**480/480 全绿**（4 跳过为需联网用例）。
+
+## 0.11.0+36 — 2026-11-19
+
+### 调整（播放页：移除倍速按钮，点击主体切换歌词/封面）
+
+- **倍速按钮移除**：控制区音量行右侧的「播放速度」弹层按钮（`_SpeedButton`）按需求删除，手机/桌面均不再渲染；手机端该行整体不再出现（原本只剩一个倍速按钮），桌面端保留应用内音量条。服务层 `PlayerService.setSpeed` 与速度持久化不受影响（AVSession/桌面端仍可用）。
+- **点击切换歌词/封面**：播放页主体（黑胶封面区/歌词区）整块可点，点击在封面 ↔ 歌词间切换（300ms AnimatedSwitcher 过渡），与右下角歌词按钮等效；歌词区内部拖动滚动不受影响，歌词加载失败态的「重试」按钮自身吸收点击不触发切换。
+- **测试**：`player_volume_test` 断言更新（手机/桌面倍速入口均 `findsNothing`）；`player_page_layout_test` 新增「点击主体在封面/歌词间切换」回归 1 条。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**479/479 全绿**（4 跳过为需联网用例；+1）。
+
+## 0.11.0+35 — 2026-11-19
+
+### 修复（酷狗「登录已过期」— 账号歌单 20017）
+
+- **痛点**：酷狗扫码登录成功后，账号歌单页仍报「登录已过期，请重新登录」；用户重扫码无效，`/v7/get_all_list` 始终返回 `error_code=20017`。
+- **根因**（对照 MakcRe/KuGouMusicApi main 定案）：旧扫码链路是 H5 网页型二维码（取码/轮询 `appid=1014`、`clientver=8131`），拿到的 token 是 **H5（1014）型**；而账号歌单走 cloudlist（`x-router: cloudlist.service.kugou.com`，Android 签名 `appid=1005`），只认 **Android（1005）型 token**——H5 型被拒 20017（与此前实测 v5/login_by_token 等 Android 域接口拒 1014 token 的结论同源）。
+- **修复**：扫码链路整体切到 Android 客户端型（`login_qr_key.js`/`login_qr_check.js` 默认分支）：
+  - 取码 `/v2/qrcode`：`appid=1001`（Android 型二维码）、`qrcode_txt` 内嵌 `appid=1005`、`clientver=20489`、`srcappid=2919`（实测返回同结构 `data.qrcode/qrcode_img`）；
+  - 轮询 `/v2/get_userinfo_qrcode`：`appid=1005`、`clientver=20489`、`srcappid=2919` → status=4 返回 Android 型 token；
+  - 设备 mid（十进制）首次生成后以 `kg_mid` 持久化进会话 cookie，取码/轮询/`get_all_list`（`_gatewaySignedPost` 新增 `mid` 参数）共用，密码/验证码登录同样复用与持久化；
+  - 登录成功后**需重新扫码**获取 Android 型 token（旧 H5 型 token 无法升级）。
+- **测试**：更新签名固定向量（新参数 PowerShell 独立算得）+ 取码/轮询参数断言；新增 `get_all_list` 使用会话 `kg_mid` 回归（20017 诱因之一：旧实现用无关的匿名搜索 mid）。测试 481/488 全绿（新增 1 条）。
+
+## 0.11.0+34 — 2026-11-19
+
+### 增强（导入歌单带出源歌单名称与封面）
+
+- **痛点**：导入分享链接后歌单名默认「导入歌单」需手填、封面是渐变占位——源歌单的名称和封面没有带过来。
+- **接口层新增 `MusicPlatformApi.playlistInfo`**（默认 null，失败不阻塞导入）：
+  - QQ：`uniform_get_Dissinfo` 的 `dirinfo.title/picurl` + `total_song_num`（探针实测字段）。
+  - 网易云：`v3/playlist/detail` 的 `playlist.name/coverImgUrl/trackCount`。
+  - 酷狗：仅 gcid 形态——m.kugou.com 歌单页内嵌 `listinfo` JSON（`name/pic/count/list_create_username`），复用 `playlistSongs` 的移动 UA 约束（桌面 UA 被 301 到 www 站无数据）；数字 specialid 无公开元数据接口，返回 null 走手填兜底。
+- **`UserPlaylist` 新增 `coverUrl` 字段**（Hive 持久化，旧存档无该字段重载兜底空串）：`createPlaylist(name, {coverUrl})`、重命名保留封面、`_LocalPlaylistCard` 封面非空显示网络图（空串仍渐变占位）。
+- **导入流程**：先取 `playlistInfo` 再拉歌曲，命名弹窗默认填源歌单名称（拉不到回落「导入歌单」），创建本地歌单时写入源封面。
+- 实网验证：用户链接（gcid `3zivrucnzoz01f`）带出「最好听的英文歌，包你上瘾！」+ `c1.kgimg.com/custom/240/...` 封面 + 创建者「大Ner」+ 400 首。
+- 新增测试 5 条：playlistInfo 三平台字段映射 4 条（含酷狗数字 specialid 返回 null）+ 封面创建/重命名保留/持久化重载/旧存档兜底 1 条。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**477/477 全绿**（+5）。
+
+## 0.11.0+33 — 2026-11-19
+
+### 修复（酷狗 gcid 歌单分享链接导入「无法识别」）
+
+- **根因**：酷狗 App/网页的歌单分享链接是 `https://m.kugou.com/songlist/gcid_XXX/?src_cid=XXX` 形态——gcid（全球集合 ID，字母数字混合）在**路径**里，而 `parseJXPlaylistLink` 只认 `?specialid=`/`?global_collection_id=`/`?id=` 三个数字参数形态，全部命中不了 → 提示「无法识别歌单链接」。
+- **链接解析**：kugou 分支新增 `/songlist/gcid_([A-Za-z0-9]+)` 路径形态与字母数字版 `global_collection_id` 参数；原有数字 specialid 链接不受影响。
+- **gcid → specialid 映射**（KuGouApi.playlistSongs）：gcid 不能直查 `special/song`（实测返回「参数不合法」）；非数字 id 先经 `m.kugou.com/songlist/gcid_XXX/` 歌单页映射成数字 specialid（页面内嵌 `"specialid":2509422`），再走原有接口。**必须带移动浏览器 UA**——桌面 UA 会被 301 到 `www.kugou.com`，该页面不内嵌映射（实网调试定位）。
+- 实网验证：用户提供的链接（gcid `3zivrucnzoz01f`，400 首歌单）实链拉回 **325 首**（下架/不可见曲目不计），分页聚合正常。
+- 新增离线回归 4 条：parseJXPlaylistLink gcid 路径/参数两形态；playlistSongs gcid 映射链路（歌单页→special/song 参数断言）与无效 gcid 返回空不抛异常。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**472/472 全绿**（+4）。
+
+## 0.11.0+32 — 2026-11-19
+
+### 修复（QQ 音乐用户歌单封面/曲目数不显示）
+
+- **根因**：`musicu` `GetPlaylistByUin` 的 `v_playlist` 字段为**驼峰**（探针实测）：`picUrl`/`bigpicUrl`/`dirName`/`songNum`，而 `_playlistFromUserItem` 旧映射链只认 `picurl`/`logo`/`cover`/`songnum`/`song_cnt`，全部未命中 → 封面空、曲目数 0。
+- `_playlistFromUserItem` 扩映射：coverUrl 链加 `picUrl`/`bigpicUrl`，songCount 加 `songNum`，title 链 `dirName` 提前（旧字段保留兼容收藏列表 `v_list` 形态）。
+- **http→https 规范化**：v_playlist 的封面部分是 `http://`（如「我喜欢」的 `y.gtimg.cn/cover_love_300.jpg`），且映射后统一过 `jxNormalizeImageUrl` 升 https——移动端明文被禁，不升 https 封面仍加载不出。
+- 新增离线回归：`residual_fixes_test.dart` 「QQ 用户歌单封面映射」——v_playlist 驼峰字段映射、http 升 https、v_list 旧形态（dissname/logo/songnum）不回归。
+- 酷狗「登录已过期」歌单不显示：非代码 bug，酷狗会话被服务端拒（20017），需在设置页重新扫码登录。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变。
+- `flutter test` 全量：**468/468 全绿**（含新增 QQ 封面映射回归 1 条）。
+
+## 0.11.0+31 — 2026-11-19
+
+### 音乐库信息架构重排
+
+- 一级 tab 从 5 个（收藏/历史/收藏歌单/歌单/下载）收敛为**一排三个等宽**：「音乐」「歌单」「下载」。
+- 「音乐」内二级小标签：**收藏 / 历史**（原两个一级 tab 合并，带计数）。
+- 「歌单」内二级小标签：**收藏 / 创建**（原「收藏歌单」「歌单」两个一级 tab 合并）：收藏=本机收藏+各平台账号歌单聚合；创建=自建歌单。
+- 歌单卡片手机端**一排 3 个**（原自适应约 2 列）；桌面宽内容区（≥840dp）维持自适应多列不变。
+- 自建歌单从列表行改为与收藏歌单同视觉的**卡片网格**（渐变占位封面 + 曲目数角标），长按弹「重命名 / 删除歌单」底部菜单（原行内 PopupMenu 的降级入口）。
+- 头部操作按钮随 tab/二级联动：音乐·历史→清空历史；歌单·收藏→刷新；歌单·创建→导入/新建歌单；下载→刷新。
+- 测试：`user_playlists_test` 适配新结构（一级三 tab、二级切换、平台聚合、导入歌单路径走「歌单→创建」）；全量 **467/467 全绿**；`flutter analyze` 8 条基线不变。
+
+## 0.11.0+30 — 2026-11-18
+
+### 修复（QA 遗留清单：兜底校验/换平台提示/死链文案化/酷狗分页/扫码终态）
+
+对照历史回溯清单（QA 实扫验收残留 D-03/D-05/D-06/D-11 + 播放失败诊断 P1 遗留项）集中修复，全部离线单测锁住：
+
+- **跨平台兜底校验（播放失败诊断 P1）**：`findAlternativeSong` 候选链从「非 VIP + 标题相似」扩为「非 VIP → 标题相似 → 同歌手（`similarArtist`：归一化双向包含，未知歌手/群星不过滤）→ 时长接近（`durationClose`：±8 秒或 15% 容差，防 30 秒片段/超长 Live）→ 原曲非特殊版本时排除 Live/伴奏/DJ/翻唱等候选（`isOddVersion`，英文词用词边界防误伤 Discover/Believe）」。历史问题：兜底会把 VIP 曲换成同名不同歌手的歌或 Live/片段。
+- **换平台不再静默**：兜底成功换歌时 `resolveAndPlay` 调 `PlayerService.reportSourceSwitch`，ShellPage 监听 `lastSourceSwitchNotice` 弹 SnackBar「「歌名」在XX不可播，已切换XX版本」后清除。
+- **死链原因文案化（#3/#6）**：三平台 `getPlayUrl` 失败的**已知特定原因**写入 `lastError`（网易云 code=-110 → 「该歌曲为网易云 VIP 歌曲，需登录会员账号播放」；QQ 104003 → 「该内容为节目/电台类，暂不支持播放（QQ音乐）」；酷狗 status=0 error（如「需要付费」）→ 「酷狗：…（该歌曲可能需要会员或付费）」）。`PlayerService` 新增 `onlineResolutionErrorHint`，providers.resolveUrl 用快照把本次解析新增的 lastError 接入 `_playAt` 死链提示（消息追加具体原因），成功解析时清空防陈旧误报。
+- **酷狗歌单分页（#5）**：`playlistSongs` 与 QQ 语义对齐——page=1 聚合整单（>100 首按 100 条/页内部翻页，上限 10 页；接口忽略 page 参数时首元素 hash 防重守卫，不堆叠重复页），page>1 本地切片。历史问题：大歌单只有前 100 首。
+- **扫码终态提前停轮询（QA D-05）**：`MusicPlatformApi` 新增 `qrTerminal`（默认 false）；网易云 800/8821、QQ 65、酷狗 status=0 置终态，等待态复位，重新取码重置；设置页 `_poll` 检测终态即停定时器并展示 lastError，不再空转到 2 分钟。
+- **QQ 兑换链超时取消（QA D-06）**：pollQrLogin 的 `.timeout` onTimeout 里 `CancelToken.cancel()` 取消底层请求，CancelToken 贯穿 check_sig/authorize/OAuth 链/QQLogin 全链；取消异常不覆盖已写好的超时提示（防一次性 code 被晚到响应消费、迟到失败覆盖提示）。
+- **QQ `#code=` fragment（QA D-11）**：`_extractCodeFromText` 提为顶层公开 `extractOAuthCode`，正则扩为 `[#?&]code=`——授权方用 fragment 形态回跳（`wx_redirect.html#code=xxx`）也能取到 code。
+- 新增 `test/residual_fixes_test.dart`：23 条离线回归（三平台 qrTerminal 三态与重置、-110/104003/酷狗付费文案、extractOAuthCode 五形态、酷狗分页聚合/防重/切片、兜底三纯函数、reportSourceSwitch），不联网。
+
+### 门禁
+
+- `flutter analyze`：8 issue 基线不变（tray_service dead_code + check_api_test avoid_print×6 + home_rank_expand unused_import，均为存量）。
+- `flutter test` 全量：**467/467 全绿**（含新增 residual_fixes_test 23 条）。
+
+### 真机回归（Mate 80 Pro，arm64 +30 签名包）
+
+- 安装/启动冒烟：首屏正常渲染，无白屏/崩溃/弹窗。
+- **#4 栀子花开**：搜索→播放何炅版成功，进度正常前进（PASS）。
+- **#8 深色模式**：跟随系统深色，背景/文字/播放栏/导航对比度正常，无渲染异常（PASS）。
+- **D-05 扫码终态**（酷狗，不扫码等待）：约 150 秒后出现「二维码已过期，请关闭后重新获取」，时机与二维码有效期一致而非 2 分钟客户端超时，终态停轮询生效（PASS）。副作用：验证过程退出了酷狗登录，需重新扫码恢复。
+
+## 0.11.0+29 — 2026-11-18
+
+### 修复（队列死链曲目卡死整条播放队列：自动跳过 + 提示）
+
+真机（Mate 80 Pro）实测网易云隐私歌单「山有木兮」20 首整单播放时发现：非 VIP 账号下部分曲目解析不出直链（VIP/版权限制），自动下一首撞上这种「死链曲目」时**整个队列停在 00:00 不再前进**（实测卡在「立夏」），且不写 `lastResolutionError`——用户看不到任何提示，表现为「应用卡了」。
+
+- **`lib/services/player_service.dart`**：`_playAt` 增加 `autoAdvance` 参数——自动前进场景（自然播完的下一首、播放器报错后的重解析重试、用户按「下一首」）撞上死链曲目时，提示「「歌名」暂无播放链接，已跳过」后自动跳到队列下一首，队列不中断；队尾无下一首可跳则停下并给出可行动提示（「可尝试切换其它平台音源」）。用户主动点播（队列面板/歌单点击）保持原有「停下并提示」语义不变；本地加密曲目失败提示（评审 R-11）行为不变。
+- 死链曲目从此不再静默：所有「无可播放链接」路径都写 `lastResolutionError`，复用 shell_page 的 SnackBar 链路。
+- 新增 `test/queue_auto_advance_test.dart`：用户点播死链提示、自动前进跳过继续播、队尾死链不越界不误导、连续多首死链逐首跳过，共 4 条回归。
+
+### 验证（真机 Mate 80 Pro，HarmonyOS API 26，arm64 +29，uitest）
+
+- 网易云山有木兮整单播放：告白之夜/唐人实际出声播放（进度推进、音频渲染数据流、状态栏网速 53-82KB/s）。
+- 播放队列 (20) 完整展示；队列内点歌切换正常。
+- 死链曲目自动跳过链路见上（+29 修复后复验）。
+
+### 排查记录（+29 期间「本机收藏」条目一度消失：非应用 bug，结案）
+
+- 现象：+28 复验时「本机收藏 1 · 山有木兮」正常，+29 装机后区块消失。取证 `jx_playlists.hive`：收藏键 `c:1:2902307374` 共 4 帧 = put/delete/put/delete（+27 的 收藏→取消→重收 + 末尾多出一帧 delete），且全部自动化 tap 均已对照 dumpLayout 复核、无一落在星标上；代码侧唯一删除路径是星标按钮 `toggleCollectedPlaylist`。
+- 真机重收复验（+29）：收藏 → 区块恢复 → 冷重启 → 导航 → 播放全部 → 播放器页 → 队列面板 → 返回，逐步拉取盒文件比对，**零异常写入**（期间一次误收藏为测试脚本时序问题——mini player 未就绪时坐标落到详情页星标，随即取消恢复；这反而证实了「坐标落在过期页面状态会误触星标」是唯一可复现的删除机制）。真机为用户日常使用设备，+28→+29 窗口内的删除帧最可能来自窗口期的人为操作，非应用自动行为。
+- 结论：收藏持久化链路（Hive 写入/重载/去重/冷重启）经盒级帧取证与逐步复验稳定，无需代码改动。
+
+## 0.11.0+28 — 2026-11-18
+
+### 修复（无 libmpv 环境启动白屏：播放引擎初始化失败优雅降级）
+
+模拟器（x86_64）安装后启动只显示状态栏、主体全白。根因：media_kit 的 OHOS 原生库只发布了 arm64-v8a/armeabi-v7a 两个 ABI（`media_kit_libs_ohos_video/libs/`），x86_64 模拟器上 `DynamicLibrary.open('libmpv.so.2')` 必然失败；而 `MediaKit.ensureInitialized()` 失败时 `rethrow`，`main()` 未捕获 → `runApp()` 永不执行 → 白屏（进程活着、无崩溃日志，极易误诊）。
+
+- **`lib/main.dart`**：`MediaKit.ensureInitialized()` 包 try/catch——引擎缺失只 `debugPrint`，UI 照常启动；播放能力由 PlayerService 降级处理。
+- **`lib/services/player_service.dart`**：`_init()` 里 `Player()` 创建包 try/catch，失败置空 `_player`；新增 `_playerCreationRequested` 标记（构造器初始化列表）区分「测试 initPlayer:false」（保持原静默 no-op 语义，不提示）与「真机请求了引擎但创建失败」（点播时置 `lastResolutionError='播放引擎初始化失败，播放功能暂不可用'`，复用 shell_page 的 SnackBar 链路给出明确提示，不再静默无反应）。
+- 不影响真机（arm64 libmpv 正常加载，行为不变）；测试契约保持（`initPlayer:false` 的 onSongStarted 回调语义未动）。
+
+### 验证（Pura 80 Pro 模拟器，HarmonyOS 6.1.1，x86_64，uitest）
+
+- 启动白屏修复：应用完整 UI 正常渲染（首页三平台热门聚合/底部五 tab）。
+- 账号盒从真机沙盒恢复（`jx_accounts.hive` 推入 `app_flutter/`）：收藏歌单 tab「QQ音乐 · 4 个歌单」「网易云音乐 · 4 个歌单」「酷狗音乐 · 登录已过期，请重新登录」三态正确。
+- 隐私歌单「山有木兮」详情：`lD李先森 · 20 首` 全量列表（1-7 号曲目渲染正常）。
+- 星标收藏：「本机收藏 1 · 山有木兮」区块出现，平台区同歌单去重。
+- 酷狗错误 chip 点击跳设置页：账号与登录三行（QQ/网易云/酷狗登录态）正常。
+- 无引擎点歌：SnackBar「播放引擎初始化失败，播放功能暂不可用」，进程不崩。
+- 门禁：`flutter analyze` 8 issue 基线不变；`flutter test` **438/438 全绿**。
+
+### 已知限制
+
+- 播放功能在 x86_64 模拟器不可用（上游 media_kit OHOS 库无 x86_64 libmpv 预编译产物）；真机 arm64 不受影响。
+- 酷狗 token 已过期（error_code 20017），需在设置页扫码重新登录。
+
 ## 0.11.0+27 — 2026-11-18
 
 ### 修复（网易云/酷狗登录账号歌单拉取：两处接口 bug + 错误态透明化）
@@ -13,6 +346,7 @@
 
 - **`lib/services/api/netease_api.dart`**：`userPlaylists` 端点修正为 `/api/nuser/account/get`；歌单列表解析兼容 `playlist`/`playlists` 两种字段名；带 MUSIC_U 但 `profile` 为 null 时抛 `SessionExpiredException('登录已过期，请重新登录')`（`on SessionExpiredException { rethrow; }` 不被兜底 catch 吞掉），作为真会话失效时的安全网；`-DJX_PROBE` 探针打印保留（编译期剔除，release 零开销）。
 - **`lib/services/api/kugou_api.dart`**：`userPlaylists` 在网关返回非零 `error_code`（20017 过期 / 20028 风控 / 其它）时抛对应 `SessionExpiredException`（琥珀 chip 提示重登），root 为 null 归为「网络错误或登录已过期」；同样 rethrow 不吞。
+- **`lib/services/api/netease_api.dart`（playlistSongs 补充修复）**：歌单详情请求 `/api/v3/playlist/detail` 此前不带登录 Cookie——隐私歌单（privacy>0）会被 401「该歌单已被创建者设置为隐私」拒绝（探针实测：本人会话 + Cookie 请求 200 全量），补 `Cookie`/`Referer` 头；加 `n=1000` 参数取全量曲目（v3 默认只回 10 首，实测 20 首歌单修复后从 10 → 20、81 首榜单从 10 → 81）。真机验证：「山有木兮」隐私歌单详情从「暂无歌曲」修复为 20 首完整加载。
 - **`lib/services/api/music_api.dart`**：新增 `SessionExpiredException`（会话失效异常，携带面向用户的 message）与 `PlatformPlaylists`（单平台歌单拉取结果：`playlists` + `error`）；`userPlaylistsByPlatform()` 返回 `Map<int, PlatformPlaylists>`——会话失效平台带 error 描述，其它异常归为「拉取失败」，单平台失败不影响其它平台。
 - **`lib/ui/library_page.dart`**：`_platformErrors`（Set）标记会话失效平台；chip 错误态用琥珀警示色（区别于平台色与灰色「未登录」），文案展示真实原因（如「酷狗音乐 · 登录已过期，请重新登录」），点击跳设置页重登（Tooltip「去设置重新登录」）；空态「去设置登录」按钮条件扩展为「未登录 或 会话失效」。
 - 新增 `tool/probe_playlists.dart` 一次性诊断探针（不进 App 产物）。
@@ -21,7 +355,12 @@
 
 - `test/user_playlists_test.dart`：`_FakePlatformApi` 新增 `sessionError`（抛 `SessionExpiredException` 模拟「已登录但平台拒绝会话」）；新增 hub 层用例（userPlaylistsByPlatform 会话失效平台带 error、不影响其它平台）与 UI 层用例（网易云/酷狗 chip 显示「登录已过期，请重新登录」、点击跳设置页 navIndex==4）。
 - 门禁：`flutter analyze` 8 issue 基线不变；`flutter test --reporter json` **438 testDone / 0 failure / 0 error** 全绿（新基线 438）。
-- 真机装机自检（uitest dumpLayout）：收藏歌单 tab 实测「QQ音乐 · 4 个歌单」「网易云音乐 · 4 个歌单」「酷狗音乐 · 登录已过期，请重新登录」，QQ/网易云歌单卡片正常渲染。
+- 真机装机自检（uitest dumpLayout，全链路）：
+  - 收藏歌单 tab：「QQ音乐 · 4 个歌单」「网易云音乐 · 4 个歌单」「酷狗音乐 · 登录已过期，请重新登录」；
+  - 隐私歌单「山有木兮」详情 20 首全量加载（修复前「暂无歌曲」）；QQ 大歌单（しんちゃん 155 首）正常；
+  - 星标收藏/取消：toast「已收藏「xx」」/「已取消收藏」，返回 tab 后「本机收藏 1」区块出现且平台歌单区同歌单去重；
+  - 首页点歌：mini player 起播（进度推进），播放器页「更多 → 播放队列」显示**播放队列 (9)** 整单在队；
+  - 酷狗错误 chip 点击跳设置页重登。
 
 ## 0.11.0+26 — 2026-11-17
 

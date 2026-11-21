@@ -15,7 +15,6 @@ import '../../services/player_service.dart';
 import '../cover.dart';
 import '../dialogs.dart';
 import '../glass.dart';
-import '../layout.dart';
 import 'vinyl_disc.dart';
 
 /// 全屏播放页（液态玻璃 + 黑胶唱片 + 歌词三态）
@@ -130,27 +129,32 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                   ),
                 ),
 
-                // 主体
+                // 主体：点击切换 封面 ↔ 歌词（歌词按钮已移除，点击主体是唯一切换入口）
                 Expanded(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 300),
-                    child: _showLyrics
-                        ? _LyricsView(
-                            key: const ValueKey('lyrics'),
-                            lyrics: player.lyrics,
-                            status: player.lyricsStatus,
-                            currentIndex: player.lyricIndex,
-                            onRetry: player.retryLyrics,
-                            textColor: textColor,
-                            textSub: textSub,
-                          )
-                        : _AlbumArtView(
-                            key: const ValueKey('art'),
-                            song: song,
-                            spinning: player.playing,
-                            textColor: textColor,
-                            textSub: textSub,
-                          ),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () =>
+                        setState(() => _showLyrics = !_showLyrics),
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: _showLyrics
+                          ? _LyricsView(
+                              key: const ValueKey('lyrics'),
+                              lyrics: player.lyrics,
+                              status: player.lyricsStatus,
+                              currentIndex: player.lyricIndex,
+                              onRetry: player.retryLyrics,
+                              textColor: textColor,
+                              textSub: textSub,
+                            )
+                          : _AlbumArtView(
+                              key: const ValueKey('art'),
+                              song: song,
+                              spinning: player.playing,
+                              textColor: textColor,
+                              textSub: textSub,
+                            ),
+                    ),
                   ),
                 ),
 
@@ -308,28 +312,22 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                           Expanded(
                             child: Center(
                               child: GlassIconButton(
-                                icon: _showLyrics
-                                    ? Icons.album_rounded
-                                    : Icons.lyrics_rounded,
+                                icon: Icons.queue_music_rounded,
                                 size: 40,
-                                color: _showLyrics ? JXColors.primary : null,
-                                onPressed: () {
-                                  setState(
-                                      () => _showLyrics = !_showLyrics);
-                                },
+                                onPressed: _showQueueSheet,
                               ),
                             ),
                           ),
                         ],
                       ),
                       const SizedBox(height: 14),
-                      // 音量 + 倍速：应用内音量条仅桌面保留，手机端音量由
-                      // 系统音量键接管（软件音量与系统一致，避免两套音量）。
-                      SizedBox(
-                        height: 32,
-                        child: Row(
-                          children: [
-                            if (_showVolumeSlider) ...[
+                      // 音量条：仅桌面保留，手机端音量由系统音量键接管
+                      // （软件音量与系统一致，避免两套音量）；倍速按钮已移除。
+                      if (_showVolumeSlider)
+                        SizedBox(
+                          height: 32,
+                          child: Row(
+                            children: [
                               SizedBox(
                                 width: 24,
                                 child: GestureDetector(
@@ -382,16 +380,9 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 8),
-                            ] else
-                              const Spacer(),
-                            _SpeedButton(
-                              speed: player.speed,
-                              onChanged: player.setSpeed,
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
@@ -415,11 +406,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
     if (!mounted) return;
     switch (picked) {
       case 'queue':
-        await showModalBottomSheet(
-          context: context,
-          backgroundColor: Colors.transparent,
-          builder: (_) => const _QueueSheet(),
-        );
+        await _showQueueSheet();
       case 'download':
         await _downloadCurrent();
       case 'favorite':
@@ -427,6 +414,15 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
       case 'add_to_playlist':
         await _addToPlaylist(song);
     }
+  }
+
+  /// 播放队列：主体右下角悬浮入口，直接打开队列弹层
+  Future<void> _showQueueSheet() async {
+    await showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _QueueSheet(),
+    );
   }
 
   /// 音源切换二级按钮：弹出「选择音源」面板；切换成功关闭面板并提示。
@@ -520,8 +516,7 @@ class _PlayerPageState extends ConsumerState<PlayerPage> {
 
   void _toast(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    jxShowNotice(context, message);
   }
 
   void _cycleLoop(PlayerService player) {
@@ -1108,54 +1103,6 @@ class _DownloadProgressDialog extends StatelessWidget {
   }
 }
 
-/// 倍速选择按钮
-class _SpeedButton extends StatelessWidget {
-  final double speed;
-  final ValueChanged<double> onChanged;
-
-  const _SpeedButton({required this.speed, required this.onChanged});
-
-  static const List<double> _options = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return PopupMenuButton<double>(
-      tooltip: '播放速度',
-      initialValue: speed,
-      onSelected: onChanged,
-      itemBuilder: (_) => [
-        for (final v in _options)
-          PopupMenuItem(value: v, child: Text(jxFormatSpeed(v))),
-      ],
-      child: Container(
-        height: 28,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: (isDark ? JXColors.glassDark : JXColors.glassLight)
-              .withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isDark
-                ? JXColors.glassStrokeDark
-                : JXColors.glassStrokeLight,
-          ),
-        ),
-        child: Text(
-          jxFormatSpeed(speed),
-          style: TextStyle(
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600,
-            height: 1.1,
-            color: speed == 1.0 ? null : JXColors.primary,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// 播放队列底部弹层
 class _QueueSheet extends ConsumerWidget {
   const _QueueSheet();
@@ -1346,8 +1293,7 @@ class _SourceSheetState extends ConsumerState<_SourceSheet> {
           _error = text;
           _errorFor = source.globalId;
         });
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(text)));
+        jxShowNotice(context, text);
       }
     }
   }

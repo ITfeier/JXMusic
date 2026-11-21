@@ -251,9 +251,7 @@ class MyPlaylistPage extends ConsumerWidget {
       BuildContext context, WidgetRef ref, List<Song> songs, int index) async {
     final ok = await resolveAndPlay(ref, songs[index], queue: songs);
     if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台'),
-      ));
+      jxShowNotice(context, '无法播放：该歌曲可能需要先在设置里登录对应平台');
     }
   }
 
@@ -262,9 +260,7 @@ class MyPlaylistPage extends ConsumerWidget {
     if (songs.isEmpty) return;
     final ok = await resolveAndPlay(ref, songs.first, queue: songs);
     if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('无法播放：该歌曲可能需要先在设置里登录对应平台'),
-      ));
+      jxShowNotice(context, '无法播放：该歌曲可能需要先在设置里登录对应平台');
     }
   }
 }

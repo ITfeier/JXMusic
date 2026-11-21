@@ -110,7 +110,11 @@ void _usePhoneSurface(WidgetTester tester) {
   });
 }
 
-Future<void> _pumpPage(WidgetTester tester, MusicPlatformApi api) async {
+Future<void> _pumpPage(
+  WidgetTester tester,
+  MusicPlatformApi api, {
+  int startPage = 1,
+}) async {
   await tester.pumpWidget(
     ProviderScope(
       // 详情页底部自带 PlayerBar（修复「整页路由盖住迷你播放条」），
@@ -122,7 +126,11 @@ Future<void> _pumpPage(WidgetTester tester, MusicPlatformApi api) async {
       ],
       child: MaterialApp(
         theme: ThemeData.dark(),
-        home: const PlaylistListPage(platform: JXPlatform.qq),
+        // 注入固定起始页（生产环境为 1~10 随机）保证分页断言确定性
+        home: PlaylistListPage(
+          platform: JXPlatform.qq,
+          randomStartPage: () => startPage,
+        ),
       ),
     ),
   );
@@ -220,5 +228,43 @@ void main() {
     expect(find.byType(PlaylistDetailPage), findsOneWidget);
     expect(find.text('歌单详情'), findsOneWidget);
     expect(api.playlistSongsCalls, 1);
+  });
+
+  testWidgets('全部歌单页：随机起始页=3 首屏渲染第 3 页，滑到底继续第 4 页', (tester) async {
+    _usePhoneSurface(tester);
+    final api = _FakePlaylistApi(pages: {
+      1: _makePlaylists('P1', 20),
+      3: _makePlaylists('P3', 20),
+      4: _makePlaylists('P4', 20),
+    });
+    await _pumpPage(tester, api, startPage: 3);
+
+    // 首屏 = 随机起始页（第 3 页），不再固定旧首页
+    expect(find.text('P3-0'), findsOneWidget);
+    expect(find.text('P1-0'), findsNothing);
+    expect(api.pageCalls[3], 1);
+    expect(api.pageCalls[1], isNull);
+
+    // 滑到底 → 从起始页顺序加载下一页（第 4 页）
+    await tester.drag(find.byType(CustomScrollView), const Offset(0, -600));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(api.pageCalls[4], 1);
+    expect(find.text('P4-0'), findsOneWidget);
+  });
+
+  testWidgets('全部歌单页：随机页越界（空结果）自动回退第 1 页', (tester) async {
+    _usePhoneSurface(tester);
+    final api = _FakePlaylistApi(pages: {
+      1: _makePlaylists('P1', 4),
+    });
+    await _pumpPage(tester, api, startPage: 9);
+
+    // 第 9 页无数据 → 回退第 1 页展示，不误报「暂无歌单」
+    expect(find.text('P1-0'), findsOneWidget);
+    expect(find.text('暂无歌单'), findsNothing);
+    expect(api.pageCalls[9], 1);
+    expect(api.pageCalls[1], 1);
+    expect(find.text('没有更多了'), findsOneWidget);
   });
 }

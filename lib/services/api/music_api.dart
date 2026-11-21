@@ -51,6 +51,11 @@ abstract class MusicPlatformApi {
   /// 获取歌单详情
   Future<List<Song>> playlistSongs(Playlist playlist, {int page = 1, int size = 100});
 
+  /// 歌单元数据（名称/封面/曲目数）。只在「仅凭 id 拿不到元数据」的场景用
+  /// （导入歌单分享链接）：把源歌单的名称和封面带过来。
+  /// 失败或不支持返回 null，调用方走手填名称兜底，不阻塞歌曲拉取。
+  Future<Playlist?> playlistInfo(Playlist playlist) async => null;
+
   /// 获取排行榜
   Future<List<Song>> topSongs({int page = 1, int size = 30});
 
@@ -117,6 +122,10 @@ abstract class MusicPlatformApi {
   /// 最近一次扫码相关操作的失败原因（成功/等待时为 null）。
   /// UI 用它展示准确原因；默认无错误，平台实现可覆盖。
   String? get lastError => null;
+
+  /// 最近一次扫码轮询是否为终态（如二维码已过期，QA D-05）。
+  /// 终态再轮询无意义，设置页据此提前停止轮询；默认非终态，平台实现可覆盖。
+  bool get qrTerminal => false;
 }
 
 /// 多平台聚合入口

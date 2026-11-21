@@ -17,6 +17,9 @@ class HistoryEntry {
 class UserPlaylist {
   final String id;
   final String name;
+
+  /// 封面图 URL（导入歌单时带过来的源歌单封面）；空串 = 无封面（UI 渐变占位）
+  final String coverUrl;
   final DateTime createdAt;
   final List<Song> songs;
 
@@ -24,14 +27,17 @@ class UserPlaylist {
     required this.id,
     required this.name,
     required this.createdAt,
+    this.coverUrl = '',
     this.songs = const [],
   });
 
   int get songCount => songs.length;
 
-  UserPlaylist copyWith({String? name, List<Song>? songs}) => UserPlaylist(
+  UserPlaylist copyWith({String? name, String? coverUrl, List<Song>? songs}) =>
+      UserPlaylist(
         id: id,
         name: name ?? this.name,
+        coverUrl: coverUrl ?? this.coverUrl,
         createdAt: createdAt,
         songs: songs ?? this.songs,
       );
@@ -169,11 +175,12 @@ class LibraryStore extends ChangeNotifier {
     return null;
   }
 
-  String createPlaylist(String name) {
+  String createPlaylist(String name, {String coverUrl = ''}) {
     final now = _now();
     final playlist = UserPlaylist(
       id: '${now.microsecondsSinceEpoch}',
       name: name.trim().isEmpty ? '新建歌单' : name.trim(),
+      coverUrl: coverUrl,
       createdAt: now,
     );
     _playlists.insert(0, playlist);
@@ -263,6 +270,7 @@ class LibraryStore extends ChangeNotifier {
     _playlistsBox.put('$_playlistPrefix${playlist.id}', {
       'id': playlist.id,
       'name': playlist.name,
+      'coverUrl': playlist.coverUrl,
       'createdAt': playlist.createdAt.millisecondsSinceEpoch,
       'songs': [for (final s in playlist.songs) _songJsonForStorage(s)],
     });
@@ -312,6 +320,7 @@ class LibraryStore extends ChangeNotifier {
         _playlists.add(UserPlaylist(
           id: id,
           name: raw?['name'] as String? ?? '未命名歌单',
+          coverUrl: raw?['coverUrl'] as String? ?? '',
           createdAt: DateTime.fromMillisecondsSinceEpoch(
               (raw?['createdAt'] as num?)?.toInt() ?? 0),
           songs: songs,

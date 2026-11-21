@@ -20,6 +20,9 @@ import 'services/local_formats/ncm_decoder.dart';
 import 'services/local_formats/qmc_decoder.dart';
 import 'services/local_music.dart';
 import 'services/local_paths.dart';
+import 'services/ohos_file_access.dart';
+import 'services/ohos_system_music.dart';
+import 'services/playback.dart';
 import 'services/player_service.dart';
 
 /// 平台登录态在 Hive 里的键（按平台区分）
@@ -105,10 +108,25 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
   final hub = ref.read(musicHubProvider);
   final library = ref.read(libraryProvider);
 
+  // 最近一次在线直链解析失败的具体原因（平台 API 本次新增 lastError）。
+  // resolveUrl 与 onlineResolutionErrorHint 同在 provider 闭包里，
+  // PlayerService 死链提示时读取（播放失败诊断 P1 文案化）。
+  String? lastOnlineResolveError;
+
   Future<String?> resolveUrl(Song song) async {
     // 本地曲目：普通格式原样返回源路径；加密格式（NCM/QMC/KGM…）解密到缓存后
     // 返回缓存路径。失败时 LocalFormatService.lastError 记录中文原因（评审 R-11）。
     if (song.platform == JXPlatform.local) {
+      // 鸿蒙系统导入的音乐：audioUrl 是 file://docs/... 的系统 URI，
+      // 经原生通道转成 fd://<fd> 交给 libmpv（普通路径无法越过沙盒访问）。
+      final rawUrl = song.audioUrl ?? '';
+      if (rawUrl.startsWith('file://')) {
+        try {
+          return await ref.read(ohosFileAccessProvider).openFdUrl(rawUrl);
+        } catch (_) {
+          return null;
+        }
+      }
       try {
         return await ref.read(localFormatServiceProvider).playableUrl(song);
       } catch (_) {
@@ -117,9 +135,17 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     }
     final api = hub.api(song.platform);
     if (api == null) return song.audioUrl;
+    // 播放失败诊断 P1：解析失败时快照本次新增的 lastError（L-1 陈旧错误不带入），
+    // 供 PlayerService 死链提示展示具体原因（VIP/需登录/节目类/付费）。
+    final before = api.lastError;
     try {
-      return await api.getPlayUrl(song);
+      final url = await api.getPlayUrl(song);
+      lastOnlineResolveError = (url == null || url.isEmpty)
+          ? freshApiError(before, api.lastError)
+          : null;
+      return url;
     } catch (_) {
+      lastOnlineResolveError = freshApiError(before, api.lastError);
       return null;
     }
   }
@@ -140,6 +166,8 @@ final playerServiceProvider = ChangeNotifierProvider<PlayerService>((ref) {
     onSettingChanged: saveSetting,
     // 队列懒解密失败时给 UI 一个具体中文原因（评审 R-11）
     resolutionErrorHint: () => ref.read(localFormatServiceProvider).lastError,
+    // 在线曲目死链时给 UI 一个具体中文原因（播放失败诊断 P1 文案化）
+    onlineResolutionErrorHint: () => lastOnlineResolveError,
     // 手机端音量由系统接管：软件音量固定 100，不恢复历史应用内音量
     initialVolume: _desktopPlatform ? _readSettingsDouble('volume', 80) : 100,
     initialLoopMode: _readSettingsInt('loopMode', 2),
@@ -171,6 +199,19 @@ final localMusicServiceProvider = Provider<LocalMusicService>((ref) {
   return LocalMusicService(
     formats: ref.read(localFormatServiceProvider),
     pathsStore: ref.read(localPathsStoreProvider),
+  );
+});
+
+/// 鸿蒙系统文件访问通道客户端（全局单例封装，测试可换实例）。
+final ohosFileAccessProvider = Provider<OhosFileAccess>((ref) {
+  return OhosFileAccess.instance;
+});
+
+/// 鸿蒙「系统音乐导入」服务（选择器 + 授权持久化 + Hive 记录）。
+final ohosSystemMusicProvider = Provider<OhosSystemMusicService>((ref) {
+  return OhosSystemMusicService(
+    fileAccess: ref.read(ohosFileAccessProvider),
+    musicService: ref.read(localMusicServiceProvider),
   );
 });
 

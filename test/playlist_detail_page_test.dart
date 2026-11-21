@@ -36,19 +36,25 @@ const Playlist _qqPlaylist = Playlist(
   songCount: 0,
 );
 
-Song _song(int index) => Song(
+Song _song(int index, {bool vip = false}) => Song(
       id: 'song$index',
       platform: JXPlatform.qq,
       title: '歌曲$index',
       artist: '歌手$index',
       album: '专辑$index',
+      vip: vip,
     );
 
 /// 固定返回指定歌曲的 fake 平台实现（不联网）。
 class _FakePlatformApi extends MusicPlatformApi {
-  _FakePlatformApi({required this.songs});
+  _FakePlatformApi({required this.songs, this.playUrlError});
 
   final List<Song> songs;
+
+  /// getPlayUrl 失败（返回 null）时写入 lastError 的具体原因；null 则不写。
+  final String? playUrlError;
+
+  String? _lastError;
   int playlistSongsCalls = 0;
 
   @override
@@ -67,7 +73,10 @@ class _FakePlatformApi extends MusicPlatformApi {
       const [];
 
   @override
-  Future<String?> getPlayUrl(Song song) async => null;
+  Future<String?> getPlayUrl(Song song) async {
+    _lastError = playUrlError;
+    return null;
+  }
 
   @override
   Future<String> getLyrics(Song song) async => '';
@@ -104,12 +113,13 @@ class _FakePlatformApi extends MusicPlatformApi {
   void restoreSession(AccountSession? session) {}
 
   @override
-  String? get lastError => null;
+  String? get lastError => _lastError;
 }
 
 Future<_FakePlatformApi> _pumpDetailPage(
   WidgetTester tester, {
   required List<Song> songs,
+  String? playUrlError,
 }) async {
   // 360x640dp @480dpi（含状态栏 24dp / 导航栏 48dp 安全区）
   tester.view.physicalSize = const Size(1080, 1920);
@@ -117,7 +127,7 @@ Future<_FakePlatformApi> _pumpDetailPage(
   tester.view.padding = const FakeViewPadding(top: 72, bottom: 144);
   addTearDown(tester.view.reset);
 
-  final api = _FakePlatformApi(songs: songs);
+  final api = _FakePlatformApi(songs: songs, playUrlError: playUrlError);
   final hub = MusicApiHub()..register(api);
   final service = PlayerService(initPlayer: false);
   final container = ProviderContainer(overrides: [
@@ -190,6 +200,36 @@ void main() {
 
     // 仍保留底部迷你播放条，且不溢出
     expect(find.byType(PlayerBar), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('未登录点 VIP 歌：提示「需要先登录」而非笼统失败文案', (tester) async {
+    await _pumpDetailPage(tester, songs: [_song(1, vip: true)]);
+
+    await tester.tap(find.text('歌曲1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('需要先登录QQ音乐才能播放 VIP 音源'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点歌失败：展示平台具体原因，不再误导「需要先在设置里登录」', (tester) async {
+    await _pumpDetailPage(
+      tester,
+      songs: [_song(1)],
+      playUrlError: '暂无可用音源（版权受限，QQ音乐）',
+    );
+
+    await tester.tap(find.text('歌曲1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 平台本次新增的具体原因必须进入提示
+    expect(find.text('「歌曲1」无法播放：暂无可用音源（版权受限，QQ音乐）'),
+        findsOneWidget);
+    // 已登录/非 VIP 场景不允许再出现误导性的「先在设置里登录」
+    expect(find.textContaining('需要先在设置里登录'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

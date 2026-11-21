@@ -10,10 +10,9 @@ import 'package:jxmusic/services/player_service.dart';
 import 'package:jxmusic/theme.dart';
 import 'package:jxmusic/ui/player/player_page.dart';
 
-/// 手机端应用内音量条移除（音量由系统音量键接管）：
-/// - 手机平台（android/ohos/ios）：音量图标/滑块不渲染，仅剩进度条，
-///   倍速按钮保留且右对齐；
-/// - 桌面平台（windows/macOS/linux）：应用内音量条保留，观感不变。
+/// 播放页底部音量/倍速区回归：
+/// - 应用内音量条仅桌面保留，手机端音量由系统音量键接管；
+/// - 倍速按钮已按需求移除（手机/桌面都不再渲染「播放速度」入口）。
 ///
 /// 复用 player_page_layout_test 的不联网 harness：
 /// `PlayerService(initPlayer: false)`（不加载 libmpv）+ 空 MusicApiHub。
@@ -52,7 +51,7 @@ Future<void> _pumpPlayerPage(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('手机端：音量条隐藏，仅剩进度条，倍速按钮保留（音量由系统接管）',
+  testWidgets('手机端：音量条隐藏，仅剩进度条，倍速按钮已移除（音量由系统接管）',
       (tester) async {
     await _pumpPlayerPage(tester);
 
@@ -64,8 +63,8 @@ void main() {
       findsOneWidget,
       reason: '手机端只剩进度条一个 Slider，应用内音量滑块应移除',
     );
-    expect(find.byTooltip('播放速度'), findsOneWidget,
-        reason: '倍速按钮不受音量条移除影响');
+    expect(find.byTooltip('播放速度'), findsNothing,
+        reason: '倍速按钮已按需求移除，不应再出现播放速度入口');
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
@@ -75,7 +74,7 @@ void main() {
     TargetPlatform.iOS,
   }));
 
-  testWidgets('桌面端：应用内音量条保留（图标 + 滑块 + 倍速）', (tester) async {
+  testWidgets('桌面端：应用内音量条保留，倍速按钮已移除', (tester) async {
     await _pumpPlayerPage(tester);
 
     expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget,
@@ -86,7 +85,8 @@ void main() {
       findsNWidgets(2),
       reason: '桌面端应有进度条 + 音量条两个 Slider',
     );
-    expect(find.byTooltip('播放速度'), findsOneWidget);
+    expect(find.byTooltip('播放速度'), findsNothing,
+        reason: '倍速按钮已按需求移除，桌面端同样不渲染');
 
     await tester.pumpWidget(const SizedBox());
     await tester.pump();

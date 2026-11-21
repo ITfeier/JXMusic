@@ -64,6 +64,13 @@ String jxNormalizeImageUrl(String? url) {
   return u;
 }
 
+/// 音频直链 http → https 升级：三家平台 CDN 均支持 https
+/// （2026-11 实测 m80x.music.126.net / aqqmusic.tc.qq.com / sharefs.kugou.com
+/// 明文与 https 同文件均可 200），而真机 libmpv 打开 http:// 直链会快速
+/// 失败（hilog 取证「Failed to open」，~150ms），统一升级 https 播放。
+String jxUpgradeHttps(String url) =>
+    url.startsWith('http://') ? 'https://${url.substring(7)}' : url;
+
 /// 平台登录态（扫码登录后填充，可持久化到 Hive）
 class AccountSession {
   final int platform;

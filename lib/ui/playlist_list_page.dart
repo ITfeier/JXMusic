@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -14,24 +16,38 @@ import 'playlist_row.dart';
 /// 旧逻辑只是把首页 10 条换成下一批，用户看不到"更多歌单"）。
 ///
 /// - 网格展示：卡片视觉复用 [JXPlaylistCard]（封面 + 平台/曲目数角标 + 单行标题）；
-/// - 分页：首屏 page=1 / size=20，滑到底自动加载下一页，底部提示「加载中 / 没有更多了」；
+/// - 分页：首屏随机起始页（默认 1~10）/ size=20，滑到底自动加载下一页，
+///   底部提示「加载中 / 没有更多了」；
 /// - 空态与失败态均提供「重试」；点卡片进入 [PlaylistDetailPage]。
 ///
 /// 三个平台的分页口径由各自 API 适配（QQ sin/ein、网易云 offset、酷狗 page），
 /// 这里只依赖 `recommendPlaylists(page:size:)` 的抽象。
+///
+/// 「随机更新」：平台推荐位 page=1 内容长期固定，固定首页会导致每次刷新/
+/// 进页都是同一批旧歌单。首屏起始页默认 1~10 随机（[randomStartPage] 可注入
+/// 固定值供测试），随机页越界（返回空）时自动回退 page=1。
 class PlaylistListPage extends ConsumerStatefulWidget {
   final int platform;
 
-  /// 内嵌在 [PlaylistHubPage] 里时隐藏返回按钮（由外层页面统一返回）。
+  /// 内嵌在 [PlaylistHubPage] 里时隐藏返回按钮（由外层页面统一返回），
+  /// 同时隐藏页内刷新按钮（由聚合页头部「更新」统一刷新三平台）。
   final bool showBack;
 
-  const PlaylistListPage({super.key, required this.platform, this.showBack = true});
+  /// 随机起始页生成器：首屏加载/刷新时调用；默认 1~10 随机。
+  final int Function()? randomStartPage;
+
+  const PlaylistListPage({
+    super.key,
+    required this.platform,
+    this.showBack = true,
+    this.randomStartPage,
+  });
 
   @override
-  ConsumerState<PlaylistListPage> createState() => _PlaylistListPageState();
+  ConsumerState<PlaylistListPage> createState() => PlaylistListPageState();
 }
 
-class _PlaylistListPageState extends ConsumerState<PlaylistListPage> {
+class PlaylistListPageState extends ConsumerState<PlaylistListPage> {
   static const int _pageSize = 20;
   static const double _hPadding = 16;
   static const double _crossSpacing = 12;
@@ -82,10 +98,18 @@ class _PlaylistListPageState extends ConsumerState<PlaylistListPage> {
       _page = 1;
       _playlists.clear();
     });
+    // 随机起始页：保证每次更新都刷出新歌单（而非固定的旧首页）
+    var page = widget.randomStartPage?.call() ?? _defaultRandomStartPage();
     try {
-      final list = await _fetchPage(1);
+      var list = await _fetchPage(page);
+      if (list.isEmpty && page != 1) {
+        // 随机页越过服务端总页数（已无更多）时回退第一页，避免误报「暂无歌单」
+        page = 1;
+        list = await _fetchPage(page);
+      }
       if (!mounted || seq != _requestSeq) return;
       setState(() {
+        _page = page;
         _playlists.addAll(list);
         _hasMore = list.length >= _pageSize;
       });
@@ -97,6 +121,16 @@ class _PlaylistListPageState extends ConsumerState<PlaylistListPage> {
         setState(() => _initialLoading = false);
       }
     }
+  }
+
+  /// 默认随机起始页：1~10 均匀随机（三平台该区间均有稳定数据）。
+  static int _defaultRandomStartPage() => Random().nextInt(10) + 1;
+
+  /// 刷新当前平台歌单：回到顶部并重新随机起始页加载。
+  /// 页内刷新按钮（独立使用时）与 [PlaylistHubPage] 头部「更新」共用。
+  void refresh() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    _loadFirst();
   }
 
   void _onScroll() {
@@ -284,14 +318,12 @@ class _PlaylistListPageState extends ConsumerState<PlaylistListPage> {
               ],
             ),
           ),
-          GlassIconButton(
-            icon: Icons.refresh_rounded,
-            size: 36,
-            onPressed: () {
-              if (_scroll.hasClients) _scroll.jumpTo(0);
-              _loadFirst();
-            },
-          ),
+          if (widget.showBack)
+            GlassIconButton(
+              icon: Icons.refresh_rounded,
+              size: 36,
+              onPressed: refresh,
+            ),
         ],
       ),
     );

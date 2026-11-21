@@ -149,6 +149,34 @@ void main() {
     expect(playlistsBox.length, 0);
   });
 
+  test('自建歌单封面：创建带封面/重命名保留/持久化重载/旧存档无字段兜底', () {
+    final store = newStore();
+    final id = store.createPlaylist('导入歌单',
+        coverUrl: 'https://c1.kgimg.com/custom/240/20200511/a.jpg');
+    expect(store.playlistById(id)?.coverUrl,
+        'https://c1.kgimg.com/custom/240/20200511/a.jpg');
+
+    // 重命名不丢封面
+    store.renamePlaylist(id, '改名');
+    expect(store.playlistById(id)?.name, '改名');
+    expect(store.playlistById(id)?.coverUrl, isNotEmpty);
+
+    // 持久化重载
+    final reloaded = newStore();
+    expect(reloaded.playlistById(id)?.coverUrl,
+        'https://c1.kgimg.com/custom/240/20200511/a.jpg');
+
+    // 普通新建无封面 → 空串（UI 渐变占位）
+    final id2 = store.createPlaylist('普通歌单');
+    expect(store.playlistById(id2)?.coverUrl, '');
+
+    // 旧存档（+34 前落库无 coverUrl 字段）重载兜底空串
+    final raw = playlistsBox.get('p:$id');
+    playlistsBox.put('p:$id',
+        Map<String, dynamic>.from(raw ?? const {})..remove('coverUrl'));
+    expect(newStore().playlistById(id)?.coverUrl, '');
+  });
+
   test('本机收藏歌单：收藏/取消/同平台同 id 去重/持久化/重载排序', () {
     final store = newStore();
     const pl1 = Playlist(

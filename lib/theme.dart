@@ -57,5 +57,24 @@ ThemeData buildJXTheme(Color seedColor, {required bool darkMode}) {
       overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
     ),
     splashFactory: InkSparkle.splashFactory,
+    snackBarTheme: SnackBarThemeData(
+      // 兜底：未经 jxShowNotice 的裸 SnackBar 也保持悬浮玻璃观感
+      // （jxShowNotice 自带完整玻璃胶囊，逐项覆盖这些主题值）
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: (darkMode ? JXColors.glassDark : JXColors.glassLight)
+          .withValues(alpha: 0.95),
+      elevation: 2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(
+          color:
+              darkMode ? JXColors.glassStrokeDark : JXColors.glassStrokeLight,
+        ),
+      ),
+      contentTextStyle: TextStyle(
+        fontSize: 13,
+        color: darkMode ? JXColors.textOnDark : JXColors.textPrimary,
+      ),
+    ),
   );
 }
